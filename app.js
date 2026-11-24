@@ -1,6 +1,6 @@
 'use strict';
 /* ShapeApp – kost, styrka, kondition och hälsologg. All data lagras lokalt (IndexedDB). */
-const APP_VERSION = '1.0.1';
+const APP_VERSION = '1.0.2';
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -332,8 +332,10 @@ async function loadFoods() {
   refreshOwnFoods();
   buildExclusionIndex();
 }
+const BUILTIN = [{ id: 'b:vatten', namn: 'Vatten', grupp: 'Dryck', a: 0, n: new Array(15).fill(0), rav: [], lc: 'vatten', egen: false }];
 function refreshOwnFoods() {
   for (const k of [...FOOD.byId.keys()]) if (String(k).startsWith('e:')) FOOD.byId.delete(k);
+  BUILTIN.forEach(b => FOOD.byId.set(b.id, b));
   (S.egnaLivsmedel || []).forEach(e => FOOD.byId.set(e.id, { id: e.id, namn: e.namn, grupp: 'Egna livsmedel', a: e.a ?? 2, n: e.n, rav: [], lc: e.namn.toLowerCase(), egen: true, taggar: e.taggar || [], kalla: e.kalla }));
 }
 function getFood(fid) { return FOOD.byId.get(fid) || FOOD.byId.get(+fid) || null; }
@@ -367,9 +369,13 @@ function rowNut(r) { // r: {n:[..per100], g}
 }
 function addNut(a, b) { NKEYS.forEach(k => a[k] = (a[k] || 0) + (b[k] || 0)); return a; }
 function zeroNut() { const o = {}; NKEYS.forEach(k => o[k] = 0); o.protA = 0; o.protV = 0; o.protM = 0; return o; }
+function portionFactor(m) {
+  const p = m.portion; if (!p || !p.total || !p.ata || p.ata >= p.total) return 1;
+  return p.ata / p.total;
+}
 function mealNut(m) {
-  const t = zeroNut();
-  m.rader.forEach(r => { const n = rowNut(r); addNut(t, n); if (r.a === 1) t.protA += n.prot; else if (r.a === 0) t.protV += n.prot; else t.protM += n.prot; });
+  const t = zeroNut(), k = portionFactor(m);
+  m.rader.forEach(r => { const n = rowNut(r); NKEYS.forEach(x => n[x] *= k); addNut(t, n); if (r.a === 1) t.protA += n.prot; else if (r.a === 0) t.protV += n.prot; else t.protM += n.prot; });
   return t;
 }
 function dayNut(datum) {
@@ -529,7 +535,7 @@ function viewKost() {
   h += `<button class="btn pri block" data-a="newMeal" style="margin-bottom:12px">${ICON.plus} Lägg till måltid</button>`;
   if (!meals.length) h += `<div class="empty">Inga måltider loggade ${dag === today() ? 'idag' : 'denna dag'}.<br>Välj en sparad måltid eller sök bland livsmedel.</div>`;
   else h += `<div class="list">${meals.map(m => { const mn = mealNut(m); const p = mealProfile(mn); return `<button class="li" data-a="editMeal" data-id="${m.id}">
-      <div class="t"><div><b>${esc(m.typ)}</b> <span class="faint small">${esc(m.tid || '')}</span>${m.namn ? ` · ${esc(m.namn)}` : ''}</div>
+      <div class="t"><div><b>${esc(m.typ)}</b> <span class="faint small">${esc(m.tid || '')}</span>${m.namn ? ` · ${esc(m.namn)}` : ''}${portionFactor(m) < 1 ? ` <span class="chip out">${f0(portionFactor(m) * 100)} % av sats</span>` : ''}</div>
       <div class="small muted num">${f0(mn.kcal)} kcal · P ${f0(mn.prot)} · K ${f0(mn.kolh)} · F ${f0(mn.fett)} · fiber ${f0(mn.fiber)}</div>
       <div style="margin-top:4px"><span class="chip ${p.cls}">${esc(p.t)}</span></div></div></button>`; }).join('')}</div>`;
   if (n.antal) {
@@ -580,7 +586,7 @@ function mealRowsHtml() {
   return `<div class="list">${MEAL.rader.map((r, i) => { const x = exclInfo(r.fid); return `<div class="food" style="cursor:default">
     <div class="grow"><div class="n">${esc(r.namn)} ${x ? `<span class="chip ${x.hide.length ? 'bad' : 'warn'}" title="${esc([...x.hide, ...x.warn].join(', '))}">${ICON.warn}</span>` : ''}</div>
     <div class="m num">${f0(r.n[0] * r.g / 100)} kcal · P ${f1(r.n[1] * r.g / 100)} · K ${f1(r.n[8] * r.g / 100)} · F ${f1(r.n[2] * r.g / 100)} · fib ${f1(r.n[12] * r.g / 100)}</div></div>
-    <div class="qty"><input type="number" inputmode="decimal" value="${r.g}" data-i="rowG" data-ix="${i}" aria-label="Gram"><span class="small muted">g</span>
+    <div class="qty"><input type="number" inputmode="decimal" step="any" value="${r.g}" data-i="rowG" data-ix="${i}" aria-label="Gram" onfocus="this.select()"><span class="small muted">g</span>
     <button class="icon-btn" data-a="rowDel" data-ix="${i}" aria-label="Ta bort">${ICON.close}</button></div></div>`; }).join('')}</div>`;
 }
 function mealSumHtml() {
@@ -589,7 +595,9 @@ function mealSumHtml() {
     <div><div class="v num">${f0(n.kcal)}</div><div class="l">kcal</div></div><div><div class="v num">${f0(n.prot)}</div><div class="l">protein</div></div>
     <div><div class="v num">${f0(n.kolh)}</div><div class="l">kolh</div></div><div><div class="v num">${f0(n.fett)}</div><div class="l">fett</div></div>
     <div><div class="v num">${f1(n.fiber)}</div><div class="l">fiber</div></div></div>
-    ${MEAL.rader.length ? `<span class="chip ${p.cls}">${esc(p.t)}</span>` : ''}</div>`;
+    ${MEAL.rader.length ? `<span class="chip ${p.cls}">${esc(p.t)}</span>` : ''}
+    ${portionFactor(MEAL) < 1 ? `<div class="note">Din portion: ${f0(MEAL.portion.ata)} av ${f0(MEAL.portion.total)} g (${f0(portionFactor(MEAL) * 100)} %) – värdena ovan gäller portionen.</div>` : ''}
+    ${MEAL.rader.length ? `<div class="note">Råvaror totalt: ${f0(sum(MEAL.rader.map(r => r.g)))} g</div>` : ''}</div>`;
 }
 function renderMealBody() {
   const b = $('#mealBody'); if (!b) return;
@@ -599,7 +607,13 @@ function renderMealBody() {
     <div id="mealSum" style="margin-top:12px">${mealSumHtml()}</div>
     <div id="mealRows">${mealRowsHtml()}</div>
     <div class="seg">${[['snabb', 'Sparade'], ['ofta', 'Ofta'], ['sok', 'Sök']].map(([k, l]) => `<button class="${MEALSRC.mode === k || (MEALSRC.mode === 'rader' && k === 'snabb') ? 'on' : ''}" data-a="mealMode" data-m="${k}">${l}</button>`).join('')}</div>
-    <div id="mealPick"></div>`;
+    <div id="weighCard" class="hidden"></div>
+    <div id="mealPick"></div>
+    <details class="card" ${MEAL.portion ? 'open' : ''} style="margin-top:12px"><summary>Del av en sats</summary>
+      <div class="small muted" style="margin-top:6px">Lagar du en hel sats, t.ex. en gryta? Väg alla råvaror ovan, väg sedan den färdiga rätten och din portion.</div>
+      <div class="inrow"><div><label class="f">Färdig rätt totalt (g)</label><input type="number" inputmode="decimal" step="any" value="${MEAL.portion?.total ?? ''}" data-i="portionF" data-k="total"></div>
+      <div><label class="f">Min portion (g)</label><input type="number" inputmode="decimal" step="any" value="${MEAL.portion?.ata ?? ''}" data-i="portionF" data-k="ata"></div></div>
+      <div class="note">Lämna tomt om du äter allt. Vatten som kokar bort påverkar inte näringen – bara hur stor andel du äter.</div></details>`;
   renderMealPick();
 }
 function refreshMealParts() { const s = $('#mealSum'); if (s) s.innerHTML = mealSumHtml(); }
@@ -620,6 +634,7 @@ function searchFoods(q, showHidden) {
     let sc = 0;
     if (f.egen) sc -= 1000;
     sc -= (S.anvandning[f.id]?.n || 0) * 20;
+    if (f.lc === q.toLowerCase().trim()) sc -= 600;
     if (f.lc.startsWith(toks[0])) sc -= 200;
     if (x && x.warn.length) sc += 150;
     sc += f.lc.length;
@@ -651,16 +666,48 @@ function renderMealRes() {
   el.innerHTML = MEALSRC.q ? (r.length ? `<div class="list">${r.map(f => foodLine(f)).join('')}</div>` : '<div class="empty">Inga träffar. Prova ett kortare ord.</div>') : '';
 }
 ACT.mealMode = el => { MEALSRC.mode = el.dataset.m; $$('#mealBody .seg button').forEach(b => b.classList.toggle('on', b === el)); renderMealPick(); if (MEALSRC.mode === 'sok') setTimeout(() => { const q = $('#mealQ'); if (q) { q.focus(); q.scrollIntoView({ block: 'start', behavior: 'smooth' }); } }, 60); };
-ACT.mealSearch = el => { MEALSRC.q = el.value; clearTimeout(ACT._ms); ACT._ms = setTimeout(renderMealRes, 120); };
+ACT.mealSearch = el => { if (MEALSRC.pending) ACT.weighCancel(); MEALSRC.q = el.value; clearTimeout(ACT._ms); ACT._ms = setTimeout(renderMealRes, 120); };
 ACT.mealShowHidden = el => { MEALSRC.showHidden = el.checked; renderMealRes(); };
 ACT.mealField = el => { MEAL[el.dataset.k] = el.value; };
+ACT.portionF = el => {
+  const p = MEAL.portion || {}; p[el.dataset.k] = pnum(el.value);
+  MEAL.portion = (p.total && p.ata) || p.total || p.ata ? p : null; refreshMealParts();
+};
 ACT.mealType = el => { MEAL.typ = el.dataset.v; $$('[data-a="mealType"]').forEach(b => b.classList.toggle('on', b === el)); };
 ACT.addFood = el => {
   const fid = isNaN(el.dataset.fid) ? el.dataset.fid : +el.dataset.fid;
-  const g = S.anvandning[fid]?.g || 100;
-  const r = snapRow(fid, g); if (!r) return;
-  MEAL.rader.push(r); $('#mealRows').innerHTML = mealRowsHtml(); refreshMealParts();
-  toast(`${r.namn} tillagd`, 1200);
+  const f = getFood(fid); if (!f) return;
+  MEALSRC.pending = fid;
+  const last = S.anvandning[fid]?.g;
+  const x = exclInfo(fid);
+  const card = $('#weighCard');
+  card.innerHTML = `<div class="card" style="border-color:var(--acc)">
+    <div class="row sb"><div class="grow"><div class="b">${esc(f.namn)}</div><div class="xs muted">per 100 g: ${f0(f.n[0])} kcal · P ${f1(f.n[1])} · K ${f1(f.n[8])} · F ${f1(f.n[2])} · fiber ${f1(f.n[12])}</div></div>
+    <button class="icon-btn" data-a="weighCancel" aria-label="Avbryt">${ICON.close}</button></div>
+    ${x && x.hide.length ? `<div class="chip bad" style="margin-top:6px">${esc(x.hide.join(', '))}</div>` : x ? `<div class="chip warn" style="margin-top:6px">${ICON.warn} kan innehålla ${esc(x.warn.join(', ').toLowerCase())}</div>` : ''}
+    <div class="row" style="margin-top:10px;gap:8px"><input type="number" inputmode="decimal" step="any" id="weighG" value="${last ?? ''}" placeholder="Vikt" data-i="weighInput" style="font-size:22px;font-weight:600;text-align:right;flex:1"><span class="b">gram</span></div>
+    <div class="btns" style="margin-top:8px">${[...new Set([last, 10, 25, 50, 100].filter(Boolean))].slice(0, 4).map(g => `<button class="btn sm" style="white-space:nowrap" data-a="weighQuick" data-g="${g}">${f0(g)} g</button>`).join('')}</div>
+    <div id="weighPrev" class="small muted num" style="margin:8px 0"></div>
+    <button class="btn pri block" data-a="weighAdd">Lägg till i måltiden</button></div>`;
+  card.classList.remove('hidden');
+  const inp = $('#weighG'); inp.focus(); inp.select();
+  updateWeighPrev();
+  card.scrollIntoView({ block: 'start', behavior: 'smooth' });
+};
+function updateWeighPrev() {
+  const f = getFood(MEALSRC.pending), g = pnum($('#weighG')?.value), el = $('#weighPrev'); if (!f || !el) return;
+  el.innerHTML = g ? `${f0(g)} g ger ${f0(f.n[0] * g / 100)} kcal · protein ${f1(f.n[1] * g / 100)} g · kolh ${f1(f.n[8] * g / 100)} g · fett ${f1(f.n[2] * g / 100)} g · fiber ${f1(f.n[12] * g / 100)} g` : 'Ange vikten du vägt upp.';
+}
+ACT.weighInput = () => updateWeighPrev();
+ACT.weighQuick = el => { $('#weighG').value = el.dataset.g; updateWeighPrev(); };
+ACT.weighCancel = () => { MEALSRC.pending = null; const c = $('#weighCard'); c.innerHTML = ''; c.classList.add('hidden'); };
+ACT.weighAdd = () => {
+  const g = pnum($('#weighG').value); if (!g || g <= 0) { toast('Ange vikt i gram'); $('#weighG').focus(); return; }
+  const r = snapRow(MEALSRC.pending, g); if (!r) return;
+  MEAL.rader.push(r); ACT.weighCancel();
+  $('#mealRows').innerHTML = mealRowsHtml(); refreshMealParts();
+  toast(`${r.namn} ${f0(g)} g tillagd`, 1400);
+  const q = $('#mealQ'); if (q) { q.focus(); q.select(); }
 };
 ACT.useMall = el => {
   const m = S.mallar.find(x => x.id === el.dataset.id); if (!m) return;
@@ -1451,7 +1498,7 @@ ACT.exportCsvMenu = () => openSheet(`${sheetHead('Exportera CSV')}<div class="sb
 ACT.csv = el => {
   const c = v => { if (v == null) return ''; if (typeof v === 'number') return String(Math.round(v * 100) / 100).replace('.', ','); const s = String(v); return /[;"\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
   const k = el.dataset.k; let rows = [];
-  if (k === 'maltider') { rows.push(['datum', 'tid', 'maltid', 'livsmedel', 'gram', ...NKEYS]); S.maltider.forEach(m => m.rader.forEach(r => { const n = rowNut(r); rows.push([m.datum, m.tid, m.typ, r.namn, r.g, ...NKEYS.map(x => n[x])]); })); }
+  if (k === 'maltider') { rows.push(['datum', 'tid', 'maltid', 'livsmedel', 'gram', ...NKEYS]); S.maltider.forEach(m => { const k = portionFactor(m); m.rader.forEach(r => { const n = rowNut(r); rows.push([m.datum, m.tid, m.typ, r.namn, r.g * k, ...NKEYS.map(x => n[x] * k)]); }); }); }
   if (k === 'traning') { rows.push(['datum', 'pass', 'ovning', 'muskelgrupp', 'set', 'kg', 'reps', 'sek', 'rpe', 'smarta']); S.pass.forEach(p => p.ovn.forEach(e => { const o = ovn(e.oid); e.set.forEach((s, i) => rows.push([p.datum, p.namn, o?.namn, o?.grupp, i + 1, s.kg, s.reps, s.sek, e.rpe, e.smarta ? 'ja' : ''])); })); }
   if (k === 'kondition') { rows.push(['datum', 'typ', 'minuter', 'intensitet', 'efter_maltid', 'anteckning']); S.kondition.forEach(x => rows.push([x.datum, x.typ, x.min, x.intensitet, x.efterMaltid ? 'ja' : 'nej', x.not])); }
   if (k === 'lab') { rows.push(['datum', 'analys', 'resultat', 'enhet', 'ref_lag', 'ref_hog', 'fastande', 'kalla', 'anteckning']); S.halsa.lab.forEach(l => rows.push([l.datum, l.analys, l.varde, l.enhet, l.refLo, l.refHi, l.fastande == null ? 'okänt' : l.fastande ? 'ja' : 'nej', l.kalla, l.not])); }
