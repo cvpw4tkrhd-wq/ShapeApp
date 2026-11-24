@@ -1,6 +1,6 @@
 'use strict';
 /* ShapeApp – kost, styrka, kondition och hälsologg. All data lagras lokalt (IndexedDB). */
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.0.1';
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -1486,6 +1486,26 @@ const Sync = {
   t: null, busy: false,
   ok() { const s = LOCAL.sync; return s && s.owner && s.repo && s.token && s.pass && s.auto !== false; },
   schedule() { if (!this.ok()) return; clearTimeout(this.t); this.t = setTimeout(() => this.push().catch(() => { }), 8000); },
+  async explain(r, action) {
+    let msg = ''; try { msg = (await r.json()).message || ''; } catch { }
+    const s = LOCAL.sync, repo = `${s.owner}/${s.repo}`;
+    const m = {
+      401: 'Token är ogiltig eller har gått ut. Skapa en ny token och klistra in den.',
+      403: `Token saknar skrivrätt. Ändra token på GitHub: Repository permissions → Contents: Read and write.`,
+      404: `Hittar inte repot ${repo} med den här token. Kontrollera stavningen av användarnamn och repo, och att token har åtkomst till just ${s.repo} (Repository access → Only select repositories).`,
+      409: 'Konflikt med en annan uppladdning. Försök igen om en stund.',
+      422: 'GitHub nekade filen (422). Försök "Skriv över backupen".'
+    }[r.status] || `GitHub svarade ${r.status}.`;
+    return new Error(`${action}: ${m}${msg ? ' (' + msg + ')' : ''}`);
+  },
+  async checkRepo() {
+    const s = LOCAL.sync;
+    const r = await fetch(`https://api.github.com/repos/${encodeURIComponent(s.owner)}/${encodeURIComponent(s.repo)}`, { headers: { Authorization: `Bearer ${s.token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' }, cache: 'no-store' });
+    if (!r.ok) throw await this.explain(r, 'Anslutningen misslyckades');
+    const j = await r.json();
+    if (!j.private) throw new Error(`Repot ${s.owner}/${s.repo} är publikt. Välj ett privat repo för backupen (Settings → General → Danger Zone → Change visibility).`);
+    return j;
+  },
   api(path, opt = {}) {
     const s = LOCAL.sync;
     return fetch(`https://api.github.com/repos/${encodeURIComponent(s.owner)}/${encodeURIComponent(s.repo)}/contents/${path}`, { ...opt, headers: { Authorization: `Bearer ${s.token}`, Accept: opt.accept || 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', ...(opt.headers || {}) }, cache: 'no-store' });
@@ -1493,7 +1513,7 @@ const Sync = {
   async remoteMeta() {
     const r = await this.api(LOCAL.sync.path || 'shapeapp-backup.json', { accept: 'application/vnd.github.object+json' });
     if (r.status === 404) return null;
-    if (!r.ok) throw new Error(`GitHub svarade ${r.status}${r.status === 401 ? ' (token ogiltig)' : r.status === 403 ? ' (saknar behörighet)' : ''}`);
+    if (!r.ok) throw await this.explain(r, 'Kunde inte läsa backupen');
     return r.json();
   },
   async push(force = false) {
@@ -1503,14 +1523,14 @@ const Sync = {
       if (meta && meta.sha !== LOCAL.lastSha && !force) { LOCAL.syncErr = 'Backupen på GitHub har ändrats från en annan enhet. Välj återställ eller skriv över under Backup.'; await saveLocal(); return; }
       const body = await Crypt.enc(S, LOCAL.sync.pass);
       const r = await this.api(LOCAL.sync.path || 'shapeapp-backup.json', { method: 'PUT', body: JSON.stringify({ message: `ShapeApp backup ${new Date().toISOString()}`, content: utf8b64(body), ...(meta ? { sha: meta.sha } : {}) }) });
-      if (!r.ok) throw new Error(`Uppladdning misslyckades (${r.status})`);
+      if (!r.ok) throw await this.explain(r, 'Uppladdningen misslyckades');
       const j = await r.json(); LOCAL.lastSha = j.content.sha; LOCAL.lastSync = Date.now(); LOCAL.syncErr = null; await saveLocal();
     } catch (e) { LOCAL.syncErr = e.message; await saveLocal(); throw e; } finally { this.busy = false; }
   },
   async pull() {
     const meta = await this.remoteMeta(); if (!meta) throw new Error('Ingen backup hittades i repot');
     const r = await this.api(LOCAL.sync.path || 'shapeapp-backup.json', { accept: 'application/vnd.github.raw+json' });
-    if (!r.ok) throw new Error(`Kunde inte hämta (${r.status})`);
+    if (!r.ok) throw await this.explain(r, 'Kunde inte hämta backupen');
     const data = await Crypt.dec(await r.text(), LOCAL.sync.pass).catch(() => { throw new Error('Fel lösenfras eller skadad fil'); });
     return { data, sha: meta.sha };
   }
@@ -1539,10 +1559,11 @@ ACT.setSync = () => {
     <div class="note">Senaste backup: ${LOCAL.lastSync ? new Date(LOCAL.lastSync).toLocaleString('sv-SE') : 'aldrig'}. Varje backup blir en commit, så äldre versioner finns kvar i repots historik.</div></div>`, { id: 'sync', onClose: backToSettings });
 };
 ACT.syncSave = async () => {
-  const s = { owner: $('#syO').value.trim(), repo: $('#syR').value.trim(), token: $('#syT').value.trim(), pass: $('#syP').value, path: 'shapeapp-backup.json', auto: $('#syA').checked };
+  const s = { owner: $('#syO').value.trim().replace(/^@/, '').replace(/^https?:\/\/github\.com\//i, '').split('/')[0], repo: $('#syR').value.trim().replace(/^.*\//, '').replace(/\.git$/, ''), token: $('#syT').value.replace(/\s+/g, ''), pass: $('#syP').value, path: 'shapeapp-backup.json', auto: $('#syA').checked };
   if (!s.owner || !s.repo || !s.token || s.pass.length < 8) { toast('Fyll i alla fält – lösenfrasen minst 8 tecken'); return; }
   LOCAL.sync = s; await saveLocal(); toast('Testar anslutningen …', 5000);
   try {
+    await Sync.checkRepo();
     const meta = await Sync.remoteMeta();
     if (meta && !LOCAL.lastSha) {
       try { await Sync.pull(); } catch (e) { toast(e.message, 4000); return; }
@@ -1551,7 +1572,7 @@ ACT.syncSave = async () => {
       return;
     }
     await Sync.push(); toast('Backup klar ✓'); ACT.setSync();
-  } catch (e) { toast(e.message, 5000); ACT.setSync(); }
+  } catch (e) { LOCAL.syncErr = e.message; await saveLocal(); toast('Backupen fungerar inte – se meddelandet', 4000); ACT.setSync(); }
 };
 ACT.syncNow = async () => { try { await Sync.push(); toast('Backup klar ✓'); } catch (e) { toast(e.message, 5000); } ACT.setSync(); };
 ACT.syncForce = () => confirmBox('Skriv över backupen på GitHub med data från den här enheten?', 'Skriv över', async () => { try { await Sync.push(true); toast('Backup klar ✓'); } catch (e) { toast(e.message, 5000); } });
