@@ -1,6 +1,6 @@
 'use strict';
 /* ShapeApp – kost, styrka, kondition och hälsologg. All data lagras lokalt (IndexedDB). */
-const APP_VERSION = '1.0.2';
+const APP_VERSION = '1.0.3';
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -264,13 +264,6 @@ const DEFAULT_MALLAR = [
 const KOND_TYPER = ['Rask promenad', 'Promenad', 'Cykel', 'Crosstrainer', 'Löpning', 'Roddmaskin', 'Simning', 'Annat'];
 const MALTYPER = ['Frukost', 'Mellanmål', 'Lunch', 'Middag', 'Kvällsmål'];
 
-const LAB_VANLIGA = [
-  ['fP-Glukos', 'mmol/L', 4.2, 6.0], ['P-Glukos (ej fastande)', 'mmol/L', null, null], ['HbA1c', 'mmol/mol', null, 42],
-  ['P-Kolesterol', 'mmol/L', null, 5.0], ['P-LDL-kolesterol', 'mmol/L', null, 3.0], ['P-HDL-kolesterol', 'mmol/L', 1.0, null],
-  ['P-Triglycerider', 'mmol/L', null, 1.7], ['P-ALAT', 'µkat/L', null, 1.1], ['B-Hemoglobin', 'g/L', 134, 170],
-  ['P-Kreatinin', 'µmol/L', 60, 105], ['Pt-eGFRrel (LMrev)', 'mL/min/1,73 m²', 80, null], ['P-TSH', 'mIE/L', 0.4, 4.0],
-  ['P-T4, fritt', 'pmol/L', 10, 22], ['P-Natrium', 'mmol/L', 137, 145], ['P-Kalium', 'mmol/L', 3.5, 4.4]
-];
 
 function defaultState() {
   const ws = weekStart(today());
@@ -310,7 +303,7 @@ function defaultState() {
       matt: [],
       somn: {}   // datum -> timmar
     },
-    paminnelser: { promenad: true, provtagning: true, veckouppfoljning: true, midja: true },
+    paminnelser: { promenad: true, veckouppfoljning: true, midja: true },
     veckonoter: {}
   };
 }
@@ -422,7 +415,6 @@ function weekKond(ws) {
 }
 function weekPass(ws) { const we = addDays(ws, 6); return S.pass.filter(p => p.datum >= ws && p.datum <= we); }
 function latest(arr) { const d = arr.filter(x => x.datum).sort((a, b) => a.datum < b.datum ? 1 : -1); return d[0] || arr.find(x => !x.datum) || null; }
-function labLatest(namn) { return latest(S.halsa.lab.filter(l => l.analys === namn)); }
 function mattLatest(typ) { return latest(S.halsa.matt.filter(m => m.typ === typ)); }
 function refStatus(v, lo, hi) {
   if (v == null) return { cls: 'out', t: 'Ej mätt' };
@@ -449,10 +441,6 @@ function render() {
 function reminders() {
   const r = [], t = today(), dow = new Date().getDay();
   const pr = S.paminnelser;
-  const hb = labLatest('HbA1c');
-  const glu = S.halsa.lab.filter(l => l.analys === 'fP-Glukos' && l.datum).sort((a, b) => a.datum < b.datum ? 1 : -1)[0];
-  if (pr.provtagning && !hb && glu && glu.refHi != null && glu.varde > glu.refHi) r.push({ t: 'Boka provtagning: nytt fasteglukos och HbA1c på vårdcentralen', a: 'tab', d: 'halsa' });
-  else if (pr.provtagning && glu && daysBetween(glu.datum, t) > 90 && (!hb || daysBetween(hb.datum, t) > 90)) r.push({ t: 'Uppföljande prover? Det har gått över tre månader sedan senaste fasteglukos.', a: 'tab', d: 'halsa' });
   if (pr.midja && !mattLatest('midja')) r.push({ t: 'Mät midjemåttet (se instruktion under Hälsa)', a: 'addMatt', d: 'midja' });
   if (pr.promenad && !activePause()) {
     const idag = S.kondition.filter(k => k.datum === t && k.efterMaltid).length;
@@ -467,8 +455,7 @@ function viewIdag() {
   setHeader('Idag', `${DAGAR[d.getDay()][0].toUpperCase() + DAGAR[d.getDay()].slice(1)} ${d.getDate()} ${MAN[d.getMonth()]} · vecka ${isoWeek(t)}`);
   const n = dayNut(t), ws = weekStart(t), kt = kondTarget(t), wk = weekKond(ws), wp = weekPass(ws), pause = activePause();
   const sleep = S.halsa.somn[t];
-  const glu = labLatest('fP-Glukos'), hb = labLatest('HbA1c'), vikt = mattLatest('vikt'), midja = mattLatest('midja'), bt = mattLatest('bt');
-  const gs = glu ? refStatus(glu.varde, glu.refLo, glu.refHi) : refStatus(null);
+  const vikt = mattLatest('vikt'), midja = mattLatest('midja'), bt = latest(S.halsa.matt.filter(m => m.typ === 'bt' && m.sys)), puls = latest(S.halsa.matt.filter(m => m.typ === 'bt' && m.puls));
   const rem = reminders();
   let h = '';
   if (S.aktivtPass) h += `<div class="banner info row sb"><span>Pågående pass: <b>${esc(S.aktivtPass.namn)}</b></span><button class="btn sm pri" data-a="resumePass">Fortsätt</button></div>`;
@@ -495,11 +482,10 @@ function viewIdag() {
     <div class="btns" style="margin-top:8px">${[6, 6.5, 7, 7.5, 8].map(v => `<button class="btn sm ${sleep === v ? 'pri' : ''}" data-a="setSleep" data-v="${v}">${f1(v)}</button>`).join('')}<button class="btn sm" data-a="setSleep" data-v="ask">Annat</button></div>
     <div class="note">Snitt 7 nätter: ${sleepAvg(t) != null ? f1(sleepAvg(t)) + ' h' : 'okänt'} · mål ${rangeTxt(S.mal.somn, ' h')}</div></div>`;
   h += `<div class="card"><div class="row sb"><h3>Senaste hälsovärden</h3><button class="btn ghost sm" data-a="tab" data-t="halsa">Hälsa</button></div>
-    <div class="kv"><span>fP-Glukos${glu ? ` <span class="faint xs">${fmtD(glu.datum)}</span>` : ''}</span><span>${glu ? f1(glu.varde) + ' mmol/L ' : ''}<span class="chip ${gs.cls}">${gs.t}</span></span></div>
-    <div class="kv"><span>HbA1c${hb ? ` <span class="faint xs">${fmtD(hb.datum)}</span>` : ''}</span><span>${hb ? f0(hb.varde) + ' mmol/mol' : '<span class="chip out">Ej mätt</span>'}</span></div>
     <div class="kv"><span>Vikt${vikt ? ` <span class="faint xs">${vikt.datum ? fmtD(vikt.datum) : 'datum okänt'}</span>` : ''}</span><span>${vikt ? f1(vikt.v) + ' kg' : '<span class="chip out">Ej mätt</span>'}</span></div>
     <div class="kv"><span>Midjemått</span><span>${midja ? f1(midja.v) + ' cm' : '<span class="chip out">Ej mätt</span>'}</span></div>
-    <div class="kv"><span>Blodtryck${bt ? ` <span class="faint xs">${bt.datum ? fmtD(bt.datum) : 'datum okänt'}</span>` : ''}</span><span>${bt ? `${bt.sys}/${bt.dia}${bt.puls ? ' · puls ' + bt.puls : ''}` : '<span class="chip out">Ej mätt</span>'}</span></div></div>`;
+    <div class="kv"><span>Blodtryck${bt ? ` <span class="faint xs">${bt.datum ? fmtD(bt.datum) : 'datum okänt'}</span>` : ''}</span><span>${bt ? `${bt.sys}/${bt.dia}` : '<span class="chip out">Ej mätt</span>'}</span></div>
+    <div class="kv"><span>Vilopuls${puls ? ` <span class="faint xs">${puls.datum ? fmtD(puls.datum) : 'datum okänt'}</span>` : ''}</span><span>${puls ? f0(puls.puls) + ' slag/min' : '<span class="chip out">Ej mätt</span>'}</span></div></div>`;
   if (rem.length) h += `<div class="sec">Påminnelser</div><div class="list">${rem.map(r => `<button class="li" data-a="${r.a}" data-t="${r.d || ''}" data-d="${r.d || ''}"><div class="t">${esc(r.t)}</div>${ICON.right.replace('<svg', '<svg width="18" height="18"')}</button>`).join('')}</div>`;
   h += `<p class="note" style="text-align:center">ShapeApp ställer inga diagnoser och ersätter inte vården.</p>`;
   return h;
@@ -685,7 +671,7 @@ ACT.addFood = el => {
     <div class="row sb"><div class="grow"><div class="b">${esc(f.namn)}</div><div class="xs muted">per 100 g: ${f0(f.n[0])} kcal · P ${f1(f.n[1])} · K ${f1(f.n[8])} · F ${f1(f.n[2])} · fiber ${f1(f.n[12])}</div></div>
     <button class="icon-btn" data-a="weighCancel" aria-label="Avbryt">${ICON.close}</button></div>
     ${x && x.hide.length ? `<div class="chip bad" style="margin-top:6px">${esc(x.hide.join(', '))}</div>` : x ? `<div class="chip warn" style="margin-top:6px">${ICON.warn} kan innehålla ${esc(x.warn.join(', ').toLowerCase())}</div>` : ''}
-    <div class="row" style="margin-top:10px;gap:8px"><input type="number" inputmode="decimal" step="any" id="weighG" value="${last ?? ''}" placeholder="Vikt" data-i="weighInput" style="font-size:22px;font-weight:600;text-align:right;flex:1"><span class="b">gram</span></div>
+    <div class="row" style="margin-top:10px;gap:8px"><input type="text" inputmode="decimal" autocomplete="off" id="weighG" value="${last ?? ''}" placeholder="Vikt" data-i="weighInput" style="font-size:22px;font-weight:600;text-align:right;flex:1"><span class="b">gram</span></div>
     <div class="btns" style="margin-top:8px">${[...new Set([last, 10, 25, 50, 100].filter(Boolean))].slice(0, 4).map(g => `<button class="btn sm" style="white-space:nowrap" data-a="weighQuick" data-g="${g}">${f0(g)} g</button>`).join('')}</div>
     <div id="weighPrev" class="small muted num" style="margin:8px 0"></div>
     <button class="btn pri block" data-a="weighAdd">Lägg till i måltiden</button></div>`;
@@ -1164,139 +1150,91 @@ ACT.pmAdd = () => { exercisePicker('Lägg till i mall', null, id => { PM.ovn.pus
 ACT.savePM = () => { const isNew = PM.ny; delete PM.ny; if (isNew) S.passmallar.push(PM); else S.passmallar[S.passmallar.findIndex(m => m.id === PM.id)] = PM; save(); ACT.manageMallarPass(); render(); };
 ACT.delPM = () => confirmBox(`Ta bort ${PM.namn}? Loggade pass påverkas inte.`, 'Ta bort', () => { S.passmallar = S.passmallar.filter(m => m.id !== PM.id); save(); render(); });
 
-/* ---------- HÄLSA ---------- */
-const MATT_TYPER = { vikt: ['Vikt', 'kg'], midja: ['Midjemått', 'cm'], bt: ['Blodtryck', 'mmHg'], glukos: ['Egen glukosmätning', 'mmol/L'] };
+/* ---------- HÄLSA (vikt, midjemått, blodtryck och puls) ---------- */
+const MATT_TYPER = { vikt: ['Vikt', 'kg'], midja: ['Midjemått', 'cm'], bt: ['Blodtryck och puls', 'mmHg'] };
+const mattList = () => S.halsa.matt.filter(m => MATT_TYPER[m.typ]);
+function pulsLatest() { return latest(S.halsa.matt.filter(m => m.typ === 'bt' && m.puls)); }
 function viewHalsa() {
-  setHeader('Hälsa', 'Värden, prover och trender');
+  setHeader('Hälsa', 'Vikt, midjemått, blodtryck och puls');
+  if (!['oversikt', 'trender', 'matt'].includes(UI.halsaVy)) UI.halsaVy = 'oversikt';
   const v = UI.halsaVy;
-  let h = `<div class="seg">${[['oversikt', 'Översikt'], ['trender', 'Trender'], ['prover', 'Prover'], ['matt', 'Mätningar']].map(([k, l]) => `<button class="${v === k ? 'on' : ''}" data-a="halsaVy" data-v="${k}">${l}</button>`).join('')}</div>`;
+  let h = `<div class="seg">${[['oversikt', 'Översikt'], ['trender', 'Trender'], ['matt', 'Mätningar']].map(([k, l]) => `<button class="${v === k ? 'on' : ''}" data-a="halsaVy" data-v="${k}">${l}</button>`).join('')}</div>`;
+  h += `<div class="btns" style="margin-bottom:12px">${Object.entries(MATT_TYPER).map(([k, [l]]) => `<button class="btn sm" data-a="addMatt" data-d="${k}">${ICON.plus} ${k === 'bt' ? 'Blodtryck/puls' : l}</button>`).join('')}</div>`;
   if (v === 'oversikt') h += halsaOversikt();
   if (v === 'trender') h += halsaTrender();
-  if (v === 'prover') h += halsaProver();
   if (v === 'matt') h += halsaMatt();
   return h;
 }
 ACT.halsaVy = el => { UI.halsaVy = el.dataset.v; render(); };
+function diffTxt(typ, unit) {
+  const d = S.halsa.matt.filter(m => m.typ === typ && m.datum).sort((a, b) => a.datum < b.datum ? 1 : -1);
+  if (d.length < 2) return '';
+  const ch = d[0].v - d[1].v;
+  return ` · ${ch > 0 ? '+' : ''}${f1(ch)} ${unit} sedan ${fmtD(d[1].datum)}`;
+}
 function halsaOversikt() {
-  const glu = labLatest('fP-Glukos'), hb = labLatest('HbA1c'), vikt = mattLatest('vikt'), midja = mattLatest('midja'), bt = mattLatest('bt');
-  const card = (titel, val, enhet, st, sub, a, d) => `<button class="card" style="text-align:left;width:100%;cursor:pointer" data-a="${a}" data-d="${d || ''}" data-t="${d || ''}">
-    <div class="row sb"><span class="small muted">${titel}</span><span class="chip ${st.cls}">${st.t}</span></div>
+  const vikt = mattLatest('vikt'), midja = mattLatest('midja'), bt = latest(S.halsa.matt.filter(m => m.typ === 'bt' && m.sys)), puls = pulsLatest();
+  const card = (titel, val, enhet, st, sub, d) => `<button class="card" style="text-align:left;width:100%;cursor:pointer" data-a="addMatt" data-d="${d}">
+    <div class="row sb"><span class="small muted">${titel}</span>${st ? `<span class="chip ${st.cls}">${st.t}</span>` : ''}</div>
     <div style="font-size:22px;font-weight:600;margin-top:2px" class="num">${val != null ? val + ` <span class="small muted">${enhet}</span>` : '<span class="faint" style="font-size:16px">Ej mätt</span>'}</div>
     <div class="xs faint">${sub}</div></button>`;
+  const dt = m => m ? (m.datum ? fmtD(m.datum) : 'Datum okänt') : '';
   let h = '<div class="grid2">';
-  h += card('Fasteglukos', glu ? f1(glu.varde) : null, 'mmol/L', glu ? refStatus(glu.varde, glu.refLo, glu.refHi) : refStatus(null), glu ? `${fmtD(glu.datum)}${S.mal.fasteglukos != null ? ' · mål &lt; ' + f1(S.mal.fasteglukos) : ''}` : (S.mal.fasteglukos != null ? 'Mål &lt; ' + f1(S.mal.fasteglukos) : ''), 'addLab', 'fP-Glukos');
-  h += card('HbA1c', hb ? f0(hb.varde) : null, 'mmol/mol', hb ? refStatus(hb.varde, null, 41.99) : refStatus(null), hb ? `${fmtD(hb.datum)}${S.mal.hba1c != null ? ' · mål &lt; ' + f0(S.mal.hba1c) : ''}` : 'Ännu ej uppmätt', 'addLab', 'HbA1c');
-  h += card('Vikt', vikt ? f1(vikt.v) : null, 'kg', { cls: 'out', t: vikt?.datum ? 'Loggad' : 'Underlag' }, vikt ? fmtD(vikt.datum) : '', 'addMatt', 'vikt');
-  h += card('Midjemått', midja ? f1(midja.v) : null, 'cm', midja ? (midja.v >= 102 ? { cls: 'warn', t: '≥ 102' } : midja.v >= 94 ? { cls: 'warn', t: '≥ 94' } : { cls: 'ok', t: '< 94' }) : refStatus(null), midja ? fmtD(midja.datum) : 'Riskgränser 94/102 cm', 'addMatt', 'midja');
-  h += card('Blodtryck', bt ? `${bt.sys}/${bt.dia}` : null, 'mmHg', bt ? (bt.sys >= 140 || bt.dia >= 90 ? { cls: 'warn', t: 'Förhöjt' } : { cls: 'ok', t: '< 140/90' }) : refStatus(null), bt ? `${bt.datum ? fmtD(bt.datum) : 'Datum okänt'}${bt.puls ? ' · puls ' + bt.puls : ''}` : '', 'addMatt', 'bt');
-  const sa = sleepAvg(today());
-  h += card('Sömn (7 nätter)', sa != null ? f1(sa) : null, 'h', sa == null ? refStatus(null) : sa >= S.mal.somn.min ? { cls: 'ok', t: 'Inom mål' } : { cls: 'warn', t: 'Under mål' }, 'Mål ' + rangeTxt(S.mal.somn, ' h'), 'tab', 'idag');
+  h += card('Vikt', vikt ? f1(vikt.v) : null, 'kg', null, dt(vikt) + diffTxt('vikt', 'kg'), 'vikt');
+  h += card('Midjemått', midja ? f1(midja.v) : null, 'cm', midja ? (midja.v >= 102 ? { cls: 'warn', t: '≥ 102' } : midja.v >= 94 ? { cls: 'warn', t: '≥ 94' } : { cls: 'ok', t: '< 94' }) : null, midja ? dt(midja) + diffTxt('midja', 'cm') : 'Riskgränser 94/102 cm', 'midja');
+  h += card('Blodtryck', bt ? `${bt.sys}/${bt.dia}` : null, 'mmHg', bt ? (bt.sys >= 140 || bt.dia >= 90 ? { cls: 'warn', t: '≥ 140/90' } : { cls: 'ok', t: '< 140/90' }) : null, dt(bt), 'bt');
+  h += card('Vilopuls', puls ? f0(puls.puls) : null, 'slag/min', null, dt(puls), 'bt');
   h += '</div>';
-  h += labSummary();
-  h += `<details class="card"><summary>Medicinsk uppföljning</summary><div class="small" style="margin-top:8px">
-    <p>Vid förhöjt fasteglukos: kontakta vårdcentralen för nytt <b>fasteglukos</b> och <b>HbA1c</b>. Diskutera även blodfetter (totalkolesterol, LDL, HDL, triglycerider), ALAT och vid behov glukosbelastning (OGTT). Följ upp efter cirka tre månader enligt vårdens bedömning.</p>
-    <p><b>Gränser:</b> fasteglukos ≥ 7,0 mmol/L och HbA1c ≥ 48 mmol/mol är diagnostiska gränser för diabetes (kräver normalt bekräftelse). HbA1c 42–47 innebär förhöjd risk. HbA1c under 42 utesluter inte förhöjt fasteglukos.</p>
-    <p><b>Sök vård snarare</b> vid uttalad törst, täta urineringar eller ofrivillig viktnedgång. <b>Sök akut vård</b> vid allmänpåverkan, kräkningar eller snabb/djup andning.</p>
-    <p class="faint">Möjliga påverkansfaktorer på glukos: sömn, stress, infektion, hård träning nära provtagning, läkemedel, ärftlighet, bukfett. Ingen orsak är fastställd. Blodtryck och puls säger inget om blodsockerregleringen.</p></div></details>`;
-  h += `<details class="card"><summary>Så mäter du midjemåttet</summary><div class="small" style="margin-top:8px">Mät mitt emellan nedersta revbenet och höftbenskammen, efter en normal utandning, stående och utan att dra åt måttbandet. För män med europeisk bakgrund används ofta 94 respektive 102 cm som riskgränser – tillämpligheten beror på individen.</div></details>`;
-  h += `<div class="sec">Uppgifter att komplettera</div><div class="card small">${[
-    ['Midjemått', !!mattLatest('midja')], ['HbA1c', !!hb], ['Fasteglukos senaste 3 mån', S.halsa.lab.some(l => l.analys === 'fP-Glukos' && l.datum && daysBetween(l.datum, today()) <= 92)],
-    ['Blodfetter', S.halsa.lab.some(l => /LDL|HDL|Kolesterol|Triglycerid/i.test(l.analys))], ['ALAT', S.halsa.lab.some(l => /ALAT/i.test(l.analys))],
-    ['Blodtryck med datum och förhållanden', S.halsa.matt.some(m => m.typ === 'bt' && m.datum)], ['Vikt med datum', S.halsa.matt.some(m => m.typ === 'vikt' && m.datum)]
-  ].map(([t, ok]) => `<div class="kv"><span>${t}</span><span>${ok ? '<span class="chip ok">✓</span>' : '<span class="chip out">Saknas</span>'}</span></div>`).join('')}
-  <div class="note">Läkemedel, ärftlighet och vardagsaktivitet kan noteras under Inställningar → Profil.</div></div>`;
+  h += `<details class="card"><summary>Så mäter du</summary><div class="small" style="margin-top:8px">
+    <p><b>Vikt:</b> på morgonen efter toalettbesök, före frukost, i samma kläder. Dagsvariationer på 1–2 kg är normala – titta på trenden.</p>
+    <p><b>Midjemått:</b> mitt emellan nedersta revbenet och höftbenskammen, efter en normal utandning, stående och utan att dra åt måttbandet. För män med europeisk bakgrund används ofta 94 respektive 102 cm som riskgränser – tillämpligheten beror på individen.</p>
+    <p><b>Blodtryck och puls:</b> sitt still 5 minuter med armen i hjärthöjd, inget kaffe, ingen nikotin eller träning 30 minuter innan. Mät gärna två gånger och logga det andra värdet.</p></div></details>`;
+  const missing = [['Midjemått', !!mattLatest('midja')], ['Vikt med datum', S.halsa.matt.some(m => m.typ === 'vikt' && m.datum)], ['Blodtryck med datum', S.halsa.matt.some(m => m.typ === 'bt' && m.datum)]].filter(x => !x[1]);
+  if (missing.length) h += `<div class="sec">Att mäta</div><div class="card small">${missing.map(([t]) => `<div class="kv"><span>${t}</span><span class="chip out">Saknas</span></div>`).join('')}</div>`;
+  h += `<p class="note" style="text-align:center">Statusmarkeringarna är allmänna riktvärden, ingen bedömning. Vid frågor om blodtryck eller hälsa – kontakta vården.</p>`;
   return h;
 }
-function labSummary() {
-  const dated = S.halsa.lab.filter(l => l.datum);
-  if (!dated.length) return `<div class="banner info">Inga provsvar inlagda ännu. Lägg till under Prover, eller importera dina startdata under Inställningar.</div>`;
-  const last = dated.map(l => l.datum).sort().pop();
-  const recent = dated.filter(l => daysBetween(l.datum, last) <= 120);
-  const out = recent.filter(l => refStatus(l.varde, l.refLo, l.refHi).cls === 'warn');
-  const g = out.find(l => l.analys === 'fP-Glukos');
-  let t = out.length ? `Utanför referensintervallet: ${out.map(l => `${esc(l.analys)} ${f2(l.varde)} ${esc(l.enhet)} (${fmtD(l.datum)})`).join(', ')}. Övriga ${recent.length - out.length} prover inom sina intervall.` : `Alla ${recent.length} senaste prover ligger inom sina referensintervall.`;
-  if (g && g.varde >= 6.1 && g.varde < 7.0) t += ' Fasteglukos 6,1–6,9 kallas förhöjt fasteglukos. Ett enstaka prov fastställer inte prediabetes eller diabetes – nytt fasteglukos och HbA1c behövs.';
-  if (g && g.varde >= 7.0) t += ' Fasteglukos ≥ 7,0 bör följas upp med vården.';
-  return `<div class="banner info"><b>Senaste prover</b><br>${t}</div>`;
-}
 function halsaTrender() {
-  const fg = S.halsa.lab.filter(l => l.analys === 'fP-Glukos' && l.datum).map(l => ({ x: l.datum, y: l.varde }));
-  const eg = S.halsa.matt.filter(m => m.typ === 'glukos' && m.datum && m.fastande === true).map(m => ({ x: m.datum, y: m.v, hollow: true }));
-  const ef = S.halsa.matt.filter(m => m.typ === 'glukos' && m.datum && m.fastande !== true).map(m => ({ x: m.datum, y: m.v, hollow: true }));
-  const hb = S.halsa.lab.filter(l => l.analys === 'HbA1c' && l.datum).map(l => ({ x: l.datum, y: l.varde }));
   const vk = S.halsa.matt.filter(m => m.typ === 'vikt' && m.datum).map(m => ({ x: m.datum, y: m.v }));
   const mj = S.halsa.matt.filter(m => m.typ === 'midja' && m.datum).map(m => ({ x: m.datum, y: m.v }));
-  const bt = S.halsa.matt.filter(m => m.typ === 'bt' && m.datum);
-  const few = (a, s) => a.length < 2 ? `<div class="note">${a.length ? 'Ett värde – trend visas när fler finns.' : 'Inga daterade värden ännu.'} ${s || ''}</div>` : '';
-  return `<div class="card"><h3>Fasteglukos (mmol/L)</h3>${lineChart([{ pts: fg, color: 'var(--acc)', label: 'Lab, fastande' }, { pts: eg, color: 'var(--c-b)', label: 'Egen, fastande' }], { lines: [{ y: 6.1, label: '6,1' }, { y: 7.0, label: '7,0', color: 'var(--bad)' }], legend: true, aria: 'Fasteglukos över tid' })}${few(fg.concat(eg))}
-    <div class="note">Endast fastande värden. Icke-fastande mätningar visas separat nedan.</div></div>
-    ${ef.length ? `<div class="card"><h3>Glukos, ej fastande / efter måltid</h3>${lineChart([{ pts: ef, color: '#C98B2B', label: 'Ej fastande' }], { aria: 'Icke-fastande glukos' })}</div>` : ''}
-    <div class="card"><h3>HbA1c (mmol/mol)</h3>${lineChart([{ pts: hb, color: 'var(--acc)', label: 'HbA1c' }], { lines: [{ y: 42, label: '42' }, { y: 48, label: '48', color: 'var(--bad)' }], aria: 'HbA1c över tid' })}${few(hb, 'Logga under Prover när du fått svar.')}</div>
-    <div class="card"><h3>Vikt (kg)</h3>${lineChart([{ pts: vk, color: 'var(--acc)', label: 'Vikt' }], { aria: 'Vikt över tid' })}${few(vk)}</div>
+  const bt = S.halsa.matt.filter(m => m.typ === 'bt' && m.datum && m.sys);
+  const pu = S.halsa.matt.filter(m => m.typ === 'bt' && m.datum && m.puls).map(m => ({ x: m.datum, y: m.puls }));
+  const few = (a, s) => a.length < 2 ? `<div class="note">${a.length ? 'Ett värde – trenden visas när fler finns.' : 'Inga daterade värden ännu.'} ${s || ''}</div>` : '';
+  return `<div class="card"><h3>Vikt (kg)</h3>${lineChart([{ pts: vk, color: 'var(--acc)', label: 'Vikt' }], { aria: 'Vikt över tid' })}${few(vk, 'Värden utan datum visas inte.')}</div>
     <div class="card"><h3>Midjemått (cm)</h3>${lineChart([{ pts: mj, color: 'var(--acc)', label: 'Midja' }], { lines: [{ y: 94, label: '94' }, { y: 102, label: '102', color: 'var(--bad)' }], aria: 'Midjemått över tid' })}${few(mj)}</div>
-    <div class="card"><h3>Blodtryck (mmHg)</h3>${lineChart([{ pts: bt.map(b => ({ x: b.datum, y: b.sys })), color: 'var(--acc)', label: 'Systoliskt' }, { pts: bt.map(b => ({ x: b.datum, y: b.dia })), color: 'var(--c-b)', label: 'Diastoliskt' }], { aria: 'Blodtryck över tid' })}${few(bt, 'Värdet från underlaget saknar datum och visas därför inte här.')}</div>`;
+    <div class="card"><h3>Blodtryck (mmHg)</h3>${lineChart([{ pts: bt.map(b => ({ x: b.datum, y: b.sys })), color: 'var(--acc)', label: 'Systoliskt' }, { pts: bt.map(b => ({ x: b.datum, y: b.dia })), color: 'var(--c-b)', label: 'Diastoliskt' }], { aria: 'Blodtryck över tid' })}${few(bt, 'Värden utan datum visas inte.')}</div>
+    <div class="card"><h3>Vilopuls (slag/min)</h3>${lineChart([{ pts: pu, color: 'var(--acc)', label: 'Puls' }], { aria: 'Vilopuls över tid' })}${few(pu)}</div>`;
 }
-function halsaProver() {
-  const byDate = {}; S.halsa.lab.forEach(l => { (byDate[l.datum || ''] = byDate[l.datum || ''] || []).push(l); });
-  const dates = Object.keys(byDate).sort().reverse();
-  return `<button class="btn pri block" data-a="addLab" style="margin-bottom:12px">${ICON.plus} Lägg till provsvar</button>
-  ${dates.map(d => `<div class="sec">${fmtD(d)} <span class="xs faint">${esc([...new Set(byDate[d].map(l => l.kalla))].join(', '))}</span></div><div class="list">${byDate[d].map(l => { const st = refStatus(l.varde, l.refLo, l.refHi); return `<button class="li" data-a="editLab" data-id="${l.id}"><div class="t"><div>${esc(l.analys)}${l.fastande === true ? ' <span class="chip out">fastande</span>' : l.fastande === false ? ' <span class="chip out">ej fastande</span>' : ''}</div><div class="xs muted">Ref. ${l.refLo != null ? f2(l.refLo) : ''}${l.refLo != null || l.refHi != null ? '–' : 'saknas'}${l.refHi != null ? f2(l.refHi) : (l.refLo != null ? '' : '')} ${esc(l.enhet)}${l.not ? ' · ' + esc(l.not) : ''}</div></div><div style="text-align:right"><div class="num b">${f2(l.varde)} <span class="xs muted">${esc(l.enhet)}</span></div><span class="chip ${st.cls}">${st.t}</span></div></button>`; }).join('')}</div>`).join('')}
-  <div class="note">Statusmarkeringarna jämför bara med laboratoriets referensintervall och är ingen bedömning.</div>`;
-}
-let LAB = null;
-ACT.addLab = el => {
-  const preset = el?.dataset?.d ? LAB_VANLIGA.find(x => x[0] === el.dataset.d) : null;
-  LAB = { id: null, datum: today(), analys: preset ? preset[0] : '', varde: null, enhet: preset ? preset[1] : '', refLo: preset ? preset[2] : null, refHi: preset ? preset[3] : null, fastande: preset && preset[0] === 'fP-Glukos' ? true : null, kalla: 'Vårdcentral', not: '' };
-  labForm();
-};
-ACT.editLab = el => { LAB = clone(S.halsa.lab.find(l => l.id === el.dataset.id)); labForm(); };
-function labForm() {
-  openSheet(`${sheetHead(LAB.id ? 'Redigera provsvar' : 'Nytt provsvar')}<div class="sbody">
-    <label class="f">Analys</label><input type="text" id="lA" list="labList" value="${esc(LAB.analys)}" data-i="labPreset"><datalist id="labList">${LAB_VANLIGA.map(x => `<option value="${esc(x[0])}">`).join('')}</datalist>
-    <div class="inrow"><div><label class="f">Resultat</label><input type="text" inputmode="decimal" id="lV" value="${LAB.varde ?? ''}"></div><div><label class="f">Enhet</label><input type="text" id="lE" value="${esc(LAB.enhet)}"></div></div>
-    <div class="inrow"><div><label class="f">Ref. lägsta</label><input type="text" inputmode="decimal" id="lLo" value="${LAB.refLo ?? ''}"></div><div><label class="f">Ref. högsta</label><input type="text" inputmode="decimal" id="lHi" value="${LAB.refHi ?? ''}"></div></div>
-    <div class="inrow"><div><label class="f">Datum</label><input type="date" id="lD" value="${LAB.datum || ''}"></div><div><label class="f">Fastande</label><select id="lF"><option value="">Okänt</option><option value="1" ${LAB.fastande === true ? 'selected' : ''}>Ja</option><option value="0" ${LAB.fastande === false ? 'selected' : ''}>Nej</option></select></div></div>
-    <label class="f">Källa</label><input type="text" id="lK" value="${esc(LAB.kalla || '')}" placeholder="Vårdcentral, 1177 …">
-    <label class="f">Provförhållanden/anteckning</label><input type="text" id="lN" value="${esc(LAB.not || '')}" placeholder="Fastetid, sömn, sjukdom, hård träning dagen innan …"></div>
-    <div class="sf"><div class="btns">${LAB.id ? '<button class="btn danger" data-a="delLab">Ta bort</button>' : ''}<button class="btn pri" data-a="saveLab">Spara</button></div></div>`);
-}
-ACT.labPreset = el => { const p = LAB_VANLIGA.find(x => x[0] === el.value); if (p) { $('#lE').value = p[1]; $('#lLo').value = p[2] ?? ''; $('#lHi').value = p[3] ?? ''; if (p[0] === 'fP-Glukos') $('#lF').value = '1'; } };
-ACT.saveLab = () => {
-  const v = pnum($('#lV').value), a = $('#lA').value.trim();
-  if (!a || v == null) { toast('Ange analys och resultat'); return; }
-  Object.assign(LAB, { analys: a, varde: v, enhet: $('#lE').value.trim(), refLo: pnum($('#lLo').value), refHi: pnum($('#lHi').value), datum: $('#lD').value || null, fastande: $('#lF').value === '' ? null : $('#lF').value === '1', kalla: $('#lK').value.trim(), not: $('#lN').value.trim() });
-  if (LAB.id) S.halsa.lab[S.halsa.lab.findIndex(l => l.id === LAB.id)] = LAB; else { LAB.id = uid(); S.halsa.lab.push(LAB); }
-  save(); closeSheet(); render(); toast('Sparat');
-};
-ACT.delLab = () => confirmBox(`Ta bort ${LAB.analys}?`, 'Ta bort', () => { S.halsa.lab = S.halsa.lab.filter(l => l.id !== LAB.id); save(); render(); });
-
 function halsaMatt() {
-  const list = [...S.halsa.matt].sort((a, b) => (b.datum || '') < (a.datum || '') ? -1 : 1);
-  return `<div class="btns" style="margin-bottom:12px">${Object.entries(MATT_TYPER).map(([k, [l]]) => `<button class="btn sm" data-a="addMatt" data-d="${k}">${ICON.plus} ${l}</button>`).join('')}</div>
-  ${list.length ? `<div class="list">${list.map(m => `<button class="li" data-a="editMatt" data-id="${m.id}"><div class="t"><div>${MATT_TYPER[m.typ][0]}${m.typ === 'glukos' ? (m.fastande ? ' <span class="chip out">fastande</span>' : ' <span class="chip out">ej fastande</span>') : ''}</div><div class="xs muted">${m.datum ? fmtD(m.datum) : 'Datum okänt'}${m.forh ? ' · ' + esc(m.forh) : ''}${m.not ? ' · ' + esc(m.not) : ''}</div></div><div class="num b">${m.typ === 'bt' ? `${m.sys}/${m.dia}${m.puls ? ` <span class="xs muted">puls ${m.puls}</span>` : ''}` : f1(m.v) + ' <span class="xs muted">' + MATT_TYPER[m.typ][1] + '</span>'}</div></button>`).join('')}</div>` : '<div class="empty">Inga mätningar ännu.</div>'}
-  <div class="note">Sömn loggas på Idag-sidan.</div>`;
+  const list = [...mattList()].sort((a, b) => (b.datum || '') < (a.datum || '') ? -1 : 1);
+  const val = m => m.typ === 'bt' ? `${m.sys ? `${m.sys}/${m.dia}` : ''}${m.puls ? ` <span class="xs muted">puls ${m.puls}</span>` : ''}` : f1(m.v) + ' <span class="xs muted">' + MATT_TYPER[m.typ][1] + '</span>';
+  return list.length ? `<div class="list">${list.map(m => `<button class="li" data-a="editMatt" data-id="${m.id}"><div class="t"><div>${MATT_TYPER[m.typ][0]}</div><div class="xs muted">${m.datum ? fmtD(m.datum) : 'Datum okänt'}${m.forh ? ' · ' + esc(m.forh) : ''}${m.not ? ' · ' + esc(m.not) : ''}</div></div><div class="num b">${val(m)}</div></button>`).join('')}</div>` : '<div class="empty">Inga mätningar ännu.</div>';
 }
 let MT = null;
-ACT.addMatt = el => { const typ = el?.dataset?.d || 'vikt'; MT = { id: null, typ, datum: today(), v: null, sys: null, dia: null, puls: null, fastande: typ === 'glukos' ? true : null, forh: typ === 'bt' ? 'Sittande vila 5 min' : typ === 'vikt' ? 'Morgon, före frukost' : '', not: '' }; mattForm(); };
+ACT.addMatt = el => { const typ = MATT_TYPER[el?.dataset?.d] ? el.dataset.d : 'vikt'; MT = { id: null, typ, datum: today(), v: null, sys: null, dia: null, puls: null, forh: typ === 'bt' ? 'Sittande vila 5 min' : typ === 'vikt' ? 'Morgon, före frukost' : '', not: '' }; mattForm(); };
 ACT.editMatt = el => { MT = clone(S.halsa.matt.find(m => m.id === el.dataset.id)); mattForm(); };
 function mattForm() {
   const [namn, enh] = MATT_TYPER[MT.typ];
-  openSheet(`${sheetHead((MT.id ? 'Redigera ' : '') + namn.toLowerCase().replace(/^./, c => c.toUpperCase()))}<div class="sbody">
-    ${MT.typ === 'bt' ? `<div class="grid3"><div><label class="f">Systoliskt</label><input type="number" inputmode="numeric" id="mS" value="${MT.sys ?? ''}"></div><div><label class="f">Diastoliskt</label><input type="number" inputmode="numeric" id="mDi" value="${MT.dia ?? ''}"></div><div><label class="f">Puls</label><input type="number" inputmode="numeric" id="mP" value="${MT.puls ?? ''}"></div></div>`
+  openSheet(`${sheetHead((MT.id ? 'Redigera ' + namn.toLowerCase() : namn))}<div class="sbody">
+    ${MT.typ === 'bt' ? `<div class="grid3"><div><label class="f">Systoliskt</label><input type="number" inputmode="numeric" id="mS" value="${MT.sys ?? ''}"></div><div><label class="f">Diastoliskt</label><input type="number" inputmode="numeric" id="mDi" value="${MT.dia ?? ''}"></div><div><label class="f">Puls</label><input type="number" inputmode="numeric" id="mP" value="${MT.puls ?? ''}"></div></div>
+      <div class="note">Du kan logga bara puls om du inte mätt blodtrycket.</div>`
       : `<label class="f">${namn} (${enh})</label><input type="text" inputmode="decimal" id="mV" value="${MT.v ?? ''}">`}
-    ${MT.typ === 'glukos' ? `<label class="f">Fastande?</label><select id="mF"><option value="1" ${MT.fastande ? 'selected' : ''}>Ja, fastande</option><option value="0" ${MT.fastande === false ? 'selected' : ''}>Nej / efter måltid</option></select>` : ''}
     ${MT.typ === 'midja' ? '<div class="note">Mitt emellan nedersta revben och höftbenskam, efter normal utandning.</div>' : ''}
-    <label class="f">Datum</label><input type="date" id="mD" value="${MT.datum || ''}">
+    <label class="f">Datum</label><input type="date" id="mD" value="${MT.datum || ''}" max="${today()}">
     <label class="f">Mätförhållanden</label><input type="text" id="mFh" value="${esc(MT.forh || '')}">
     <label class="f">Anteckning</label><input type="text" id="mN" value="${esc(MT.not || '')}"></div>
     <div class="sf"><div class="btns">${MT.id ? '<button class="btn danger" data-a="delMatt">Ta bort</button>' : ''}<button class="btn pri" data-a="saveMatt">Spara</button></div></div>`);
+  setTimeout(() => ($('#mV') || $('#mS'))?.focus(), 50);
 }
 ACT.saveMatt = () => {
-  if (MT.typ === 'bt') { MT.sys = pnum($('#mS').value); MT.dia = pnum($('#mDi').value); MT.puls = pnum($('#mP').value); if (!MT.sys || !MT.dia) { toast('Ange blodtryck'); return; } }
-  else { MT.v = pnum($('#mV').value); if (MT.v == null) { toast('Ange ett värde'); return; } }
-  if (MT.typ === 'glukos') MT.fastande = $('#mF').value === '1';
+  if (MT.typ === 'bt') {
+    MT.sys = pnum($('#mS').value); MT.dia = pnum($('#mDi').value); MT.puls = pnum($('#mP').value);
+    if (!!MT.sys !== !!MT.dia) { toast('Ange både systoliskt och diastoliskt'); return; }
+    if (!MT.sys && !MT.puls) { toast('Ange blodtryck eller puls'); return; }
+  } else { MT.v = pnum($('#mV').value); if (MT.v == null) { toast('Ange ett värde'); return; } }
   MT.datum = $('#mD').value || null; MT.forh = $('#mFh').value.trim(); MT.not = $('#mN').value.trim();
   if (MT.id) S.halsa.matt[S.halsa.matt.findIndex(m => m.id === MT.id)] = MT; else { MT.id = uid(); S.halsa.matt.push(MT); }
+  if (MT.typ === 'vikt' && MT.datum && (!S.profil.vikt || MT.datum >= (mattLatest('vikt')?.datum || ''))) S.profil.vikt = MT.v;
   save(); closeSheet(); render(); toast('Sparat');
 };
 ACT.delMatt = () => confirmBox('Ta bort mätningen?', 'Ta bort', () => { S.halsa.matt = S.halsa.matt.filter(m => m.id !== MT.id); save(); render(); });
@@ -1448,7 +1386,6 @@ ACT.setMal = () => {
     <div class="note">Nu: vecka ${kondTarget().vecka} i trappan.</div>
     <div class="inrow"><div><label class="f">Promenad efter måltid (min)</label><input type="number" data-mal="promenadMin" value="${m.promenadMin}"></div><div><label class="f">Vilotid mellan set (s)</label><input type="number" data-mal="vilaSek" value="${m.vilaSek}"></div></div>
     <div class="sec">Hälsovärden</div>
-    <div class="inrow"><div><label class="f">Fasteglukos under (mmol/L)</label><input type="number" inputmode="decimal" step="any" data-mal="fasteglukos" value="${m.fasteglukos ?? ''}"></div><div><label class="f">HbA1c under (mmol/mol)</label><input type="number" data-mal="hba1c" value="${m.hba1c ?? ''}"></div></div>
     <div class="inrow"><div><label class="f">Midjemått under (cm)</label><input type="number" data-mal="midja" value="${m.midja ?? ''}"></div><div><label class="f">Målvikt cirka (kg)</label><input type="number" inputmode="decimal" data-mal="vikt" value="${m.vikt ?? ''}"></div></div>
     <div class="note">Målen är utgångsvärden från underlaget och ingen garanti. Ingen automatisk rekommendation om viktminskning.</div></div>
     <div class="sf"><button class="btn pri block" data-a="saveMal">Spara</button></div>`, { onClose: backToSettings });
@@ -1463,18 +1400,17 @@ ACT.saveMal = () => {
 ACT.setPamin = () => {
   const p = S.paminnelser; const t = (k, l) => `<label class="row sb" style="padding:8px 0"><span>${l}</span><span class="tog"><input type="checkbox" data-pm="${k}" ${p[k] ? 'checked' : ''}><span></span></span></label>`;
   openSheet(`${sheetHead('Påminnelser')}<div class="sbody"><div class="card">
-    ${t('promenad', 'Promenad efter lunch/middag')}${t('provtagning', 'Provtagning (fasteglukos/HbA1c)')}${t('veckouppfoljning', 'Veckouppföljning på söndagar')}${t('midja', 'Mät midjemått')}
+    ${t('promenad', 'Promenad efter lunch/middag')}${t('veckouppfoljning', 'Veckouppföljning på söndagar')}${t('midja', 'Mät midjemått')}
     <div class="note">Visas på Idag-sidan när appen är öppen.</div></div>
     <div class="card"><h3>Påminnelser i telefonens kalender</h3><p class="small muted">En webbapp kan inte skicka notiser när den är stängd. Lägg i stället in återkommande händelser i kalendern – iPhone påminner då som vanligt.</p>
-    <label class="f">Händelse</label><select id="icsT"><option value="walk">Promenad efter lunch (vardagar 12:45)</option><option value="walk2">Promenad efter middag (dagligen 18:45)</option><option value="train">Styrkepass (mån, ons, fre 17:30)</option><option value="review">Veckouppföljning (söndag 19:00)</option><option value="lab">Boka provtagning (om 2 dagar 09:00)</option></select>
+    <label class="f">Händelse</label><select id="icsT"><option value="walk">Promenad efter lunch (vardagar 12:45)</option><option value="walk2">Promenad efter middag (dagligen 18:45)</option><option value="train">Styrkepass (mån, ons, fre 17:30)</option><option value="review">Veckouppföljning (söndag 19:00)</option></select>
     <button class="btn block" data-a="makeIcs" style="margin-top:10px">Lägg till i kalendern (.ics)</button></div></div>
     <div class="sf"><button class="btn pri block" data-a="savePamin">Spara</button></div>`, { onClose: backToSettings });
 };
 ACT.savePamin = () => { $$('[data-pm]').forEach(i => S.paminnelser[i.dataset.pm] = i.checked); save(); closeSheet(); render(); };
 ACT.makeIcs = () => {
   const k = $('#icsT').value; const d = new Date(); const ymd = x => `${x.getFullYear()}${pad(x.getMonth() + 1)}${pad(x.getDate())}`;
-  const conf = { walk: ['Promenad efter lunch', '124500', 'FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR', 15], walk2: ['Promenad efter middag', '184500', 'FREQ=DAILY', 15], train: ['Styrkepass – ShapeApp', '173000', 'FREQ=WEEKLY;BYDAY=MO,WE,FR', 60], review: ['Veckouppföljning i ShapeApp', '190000', 'FREQ=WEEKLY;BYDAY=SU', 10], lab: ['Boka provtagning: fasteglukos och HbA1c', '090000', '', 10] }[k];
-  if (k === 'lab') d.setDate(d.getDate() + 2);
+  const conf = { walk: ['Promenad efter lunch', '124500', 'FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR', 15], walk2: ['Promenad efter middag', '184500', 'FREQ=DAILY', 15], train: ['Styrkepass – ShapeApp', '173000', 'FREQ=WEEKLY;BYDAY=MO,WE,FR', 60], review: ['Veckouppföljning i ShapeApp', '190000', 'FREQ=WEEKLY;BYDAY=SU', 10] }[k];
   const start = `${ymd(d)}T${conf[1]}`; const endD = new Date(d); const [hh, mm] = [+conf[1].slice(0, 2), +conf[1].slice(2, 4) + conf[3]]; endD.setHours(hh + Math.floor(mm / 60), mm % 60);
   const end = `${ymd(endD)}T${pad(endD.getHours())}${pad(endD.getMinutes())}00`;
   const ics = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//ShapeApp//SV', 'BEGIN:VEVENT', `UID:${uid()}@shapeapp`, `DTSTAMP:${new Date().toISOString().replace(/[-:]/g, '').split('.')[0]}Z`, `DTSTART;TZID=Europe/Stockholm:${start}`, `DTEND;TZID=Europe/Stockholm:${end}`, conf[2] ? `RRULE:${conf[2]}` : '', `SUMMARY:${conf[0]}`, 'BEGIN:VALARM', 'ACTION:DISPLAY', `DESCRIPTION:${conf[0]}`, 'TRIGGER:-PT0M', 'END:VALARM', 'END:VEVENT', 'END:VCALENDAR'].filter(Boolean).join('\r\n');
@@ -1492,8 +1428,7 @@ ACT.exportCsvMenu = () => openSheet(`${sheetHead('Exportera CSV')}<div class="sb
   <button class="li" data-a="csv" data-k="maltider"><div class="t">Måltider (en rad per livsmedel)</div></button>
   <button class="li" data-a="csv" data-k="traning"><div class="t">Styrketräning (en rad per set)</div></button>
   <button class="li" data-a="csv" data-k="kondition"><div class="t">Kondition</div></button>
-  <button class="li" data-a="csv" data-k="lab"><div class="t">Provsvar</div></button>
-  <button class="li" data-a="csv" data-k="matt"><div class="t">Mätningar och sömn</div></button></div>
+  <button class="li" data-a="csv" data-k="matt"><div class="t">Vikt, midjemått, blodtryck, puls och sömn</div></button></div>
   <div class="note">Semikolonseparerad med decimalkomma – öppnas direkt i svenska Excel/Numbers.</div></div>`, { onClose: backToSettings });
 ACT.csv = el => {
   const c = v => { if (v == null) return ''; if (typeof v === 'number') return String(Math.round(v * 100) / 100).replace('.', ','); const s = String(v); return /[;"\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
@@ -1501,8 +1436,7 @@ ACT.csv = el => {
   if (k === 'maltider') { rows.push(['datum', 'tid', 'maltid', 'livsmedel', 'gram', ...NKEYS]); S.maltider.forEach(m => { const k = portionFactor(m); m.rader.forEach(r => { const n = rowNut(r); rows.push([m.datum, m.tid, m.typ, r.namn, r.g * k, ...NKEYS.map(x => n[x] * k)]); }); }); }
   if (k === 'traning') { rows.push(['datum', 'pass', 'ovning', 'muskelgrupp', 'set', 'kg', 'reps', 'sek', 'rpe', 'smarta']); S.pass.forEach(p => p.ovn.forEach(e => { const o = ovn(e.oid); e.set.forEach((s, i) => rows.push([p.datum, p.namn, o?.namn, o?.grupp, i + 1, s.kg, s.reps, s.sek, e.rpe, e.smarta ? 'ja' : ''])); })); }
   if (k === 'kondition') { rows.push(['datum', 'typ', 'minuter', 'intensitet', 'efter_maltid', 'anteckning']); S.kondition.forEach(x => rows.push([x.datum, x.typ, x.min, x.intensitet, x.efterMaltid ? 'ja' : 'nej', x.not])); }
-  if (k === 'lab') { rows.push(['datum', 'analys', 'resultat', 'enhet', 'ref_lag', 'ref_hog', 'fastande', 'kalla', 'anteckning']); S.halsa.lab.forEach(l => rows.push([l.datum, l.analys, l.varde, l.enhet, l.refLo, l.refHi, l.fastande == null ? 'okänt' : l.fastande ? 'ja' : 'nej', l.kalla, l.not])); }
-  if (k === 'matt') { rows.push(['datum', 'typ', 'varde', 'systoliskt', 'diastoliskt', 'puls', 'forhallanden', 'anteckning']); S.halsa.matt.forEach(m => rows.push([m.datum, m.typ, m.v, m.sys, m.dia, m.puls, m.forh, m.not])); Object.entries(S.halsa.somn).forEach(([d, h]) => rows.push([d, 'somn_timmar', h, '', '', '', '', ''])); }
+  if (k === 'matt') { rows.push(['datum', 'typ', 'varde', 'systoliskt', 'diastoliskt', 'puls', 'forhallanden', 'anteckning']); S.halsa.matt.filter(m => MATT_TYPER[m.typ]).forEach(m => rows.push([m.datum, m.typ, m.v, m.sys, m.dia, m.puls, m.forh, m.not])); Object.entries(S.halsa.somn).forEach(([d, h]) => rows.push([d, 'somn_timmar', h, '', '', '', '', ''])); }
   download(`shapeapp-${k}-${today()}.csv`, '﻿' + rows.map(r => r.map(c).join(';')).join('\r\n'), 'text/csv');
 };
 ACT.importJson = () => { const f = $('#impFile'); f.value = ''; f.onchange = async () => { const file = f.files[0]; if (!file) return; try { const j = JSON.parse(await file.text()); const d = j.data || j; if (!d.profil || !d.maltider) throw new Error('fel format'); confirmBox('Importera och ersätta all data på den här enheten?', 'Importera', async () => { S = migrate(d); await Store.set('state', S); refreshOwnFoods(); buildExclusionIndex(); render(); toast('Data importerad'); Sync.schedule(); }); } catch (e) { toast('Kunde inte läsa filen: ' + e.message); } }; f.click(); };
