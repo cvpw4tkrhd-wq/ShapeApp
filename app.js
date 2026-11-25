@@ -1,6 +1,6 @@
 'use strict';
 /* ShapeApp – kost, styrka, kondition och hälsologg. All data lagras lokalt (IndexedDB). */
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '1.3.0';
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -291,7 +291,8 @@ function defaultState() {
       { id: uid(), namn: 'Yoghurt med chia', typ: 'Kvällsmål', rader: [{ fid: 7149, g: 200 }, { fid: 6157, g: 10 }] }
     ],
     maltider: [],
-    anvandning: {},       // fid -> {n: antal, g: senaste gram}
+    anvandning: {},       // fid -> {n: antal, g: senaste gram, u/q: senaste enhet}
+    enheter: {},          // fid -> {dl: g, msk: g, tsk: g, st: g}
     ovningar: clone(DEFAULT_OVN),
     passmallar: clone(DEFAULT_MALLAR),
     pass: [],
@@ -481,7 +482,7 @@ function viewKost() {
     ${goalBar('Protein', n.prot, S.mal.protein, 'g')}${goalBar('Fiber', n.fiber, S.mal.fiber, 'g')}
     ${S.mal.kcal.max ? goalBar('Energi', n.kcal, S.mal.kcal, 'kcal') : ''}${S.mal.kolh.max ? goalBar('Kolhydrater', n.kolh, S.mal.kolh, 'g') : ''}
     ${goalBar('Fett', n.fett, S.mal.fett, 'g')}</div>`;
-  h += `<div class="btns" style="margin-bottom:12px"><button class="btn pri" data-a="newMeal">${ICON.plus} Lägg till måltid</button><button class="btn" data-a="photoMeal">📷 Fota</button></div>`;
+  h += `<div class="btns" style="margin-bottom:12px"><button class="btn pri" data-a="newMeal">${ICON.plus} Logga måltid</button><button class="btn" data-a="manageMallar">Mina måltider</button><button class="btn" data-a="photoMeal" aria-label="Fota måltid">📷</button></div>`;
   if (!meals.length) h += `<div class="empty">Inga måltider loggade ${dag === today() ? 'idag' : 'denna dag'}.<br>Välj en sparad måltid eller sök bland livsmedel.</div>`;
   else h += `<div class="list">${meals.map(m => { const mn = mealNut(m); const p = mealProfile(mn); return `<button class="li" data-a="editMeal" data-id="${m.id}">
       <div class="t"><div><b>${esc(m.typ)}</b> <span class="faint small">${esc(m.tid || '')}</span>${m.namn ? ` · ${esc(m.namn)}` : ''}${portionFactor(m) < 1 ? ` <span class="chip out">${f0(portionFactor(m) * 100)} % av sats</span>` : ''}</div>
@@ -504,7 +505,7 @@ function viewKost() {
     if (n.fiber < (S.mal.fiber.min || 30) && dag === today()) h += fiberTips(S.mal.fiber.min - n.fiber);
   }
   h += `<div class="sec">Snabbval och planering</div><div class="list">
-    <button class="li" data-a="manageMallar"><div class="t"><div>Sparade måltider</div><div class="small muted">${S.mallar.length} st · skapa, redigera och ta bort</div></div>${ICON.right.replace('<svg', '<svg width="18" height="18"')}</button>
+    <button class="li" data-a="manageMallar"><div class="t"><div>Mina måltider</div><div class="small muted">${S.mallar.length} st · bygg av vägda ingredienser, logga med ett tryck</div></div>${ICON.right.replace('<svg', '<svg width="18" height="18"')}</button>
     <button class="li" data-a="manageOwnFoods"><div class="t"><div>Egna livsmedel</div><div class="small muted">${S.egnaLivsmedel.length} st · från förpackningens näringsdeklaration</div></div>${ICON.right.replace('<svg', '<svg width="18" height="18"')}</button>
     <button class="li" data-a="shoppingList"><div class="t"><div>Inköpslista</div><div class="small muted">Välj sparade måltider och antal</div></div>${ICON.right.replace('<svg', '<svg width="18" height="18"')}</button>
     <button class="li" data-a="openExcl"><div class="t"><div>Livsmedel jag inte äter</div><div class="small muted">${S.uteslut.filter(c => c.aktiv).map(c => c.namn).join(', ')}</div></div>${ICON.right.replace('<svg', '<svg width="18" height="18"')}</button></div>`;
@@ -520,49 +521,64 @@ function fiberTips(missing) {
 ACT.kostDag = el => { const d = addDays(UI.kostDag || today(), +el.dataset.d); if (d > today()) return; UI.kostDag = d; render(); };
 
 /* ---------- måltidseditor ---------- */
-let MEAL = null; // arbetskopia
+let MEAL = null; // arbetskopia – loggad måltid eller (mallMode) en måltid i "Mina måltider"
 let MEALSRC = { q: '', mode: 'snabb', showHidden: false };
+const ENHETER = [['g', 'g'], ['dl', 'dl'], ['msk', 'msk'], ['tsk', 'tsk'], ['st', 'st']];
+const ENHET_STD = { dl: 100, msk: 15, tsk: 5 };
+const QUICK = { g: [10, 25, 50, 100], dl: [0.5, 1, 1.5, 2], msk: [1, 2, 3], tsk: [1, 2], st: [1, 2, 3] };
 function guessType() { const h = new Date().getHours(); return h < 10 ? 'Frukost' : h < 11 ? 'Mellanmål' : h < 14 ? 'Lunch' : h < 17 ? 'Mellanmål' : h < 20 ? 'Middag' : 'Kvällsmål'; }
+const qtyTxt = r => r.u && r.u !== 'g' ? `${f1(r.q)} ${r.u}` : `${f0(r.g)} g`;
+function rowFromStored(r) { const s = snapRow(r.fid, r.g); if (!s) return null; if (r.u && r.u !== 'g') Object.assign(s, { u: r.u, q: r.q, conv: r.conv }); return s; }
+const rowToStored = r => r.u && r.u !== 'g' ? { fid: r.fid, g: r.g, u: r.u, q: r.q, conv: r.conv } : { fid: r.fid, g: r.g };
 ACT.newMeal = () => { MEAL = { id: null, datum: UI.tab === 'kost' ? (UI.kostDag || today()) : today(), tid: nowTime(), typ: guessType(), namn: '', rader: [] }; MEALSRC = { q: '', mode: 'snabb', showHidden: false }; openMealEditor(); };
 ACT.editMeal = el => { const m = S.maltider.find(x => x.id === el.dataset.id); if (!m) return; MEAL = clone(m); MEALSRC = { q: '', mode: 'rader', showHidden: false }; openMealEditor(); };
 function openMealEditor() {
-  openSheet(`${sheetHead(MEAL.id ? 'Redigera måltid' : 'Ny måltid')}<div class="sbody" id="mealBody"></div>
-  <div class="sf"><div class="btns">${MEAL.id ? `<button class="btn danger" data-a="delMeal">Ta bort</button>` : ''}<button class="btn" data-a="saveAsMall">Spara som snabbval</button><button class="btn pri" data-a="saveMeal">Spara</button></div></div>`, { full: true, id: 'meal' });
+  const mm = MEAL.mallMode;
+  const title = mm ? (MEAL.id ? 'Redigera måltid' : 'Ny måltid i Mina måltider') : (MEAL.id ? 'Redigera loggad måltid' : 'Logga måltid');
+  const foot = mm
+    ? `${MEAL.id ? '<button class="btn danger" data-a="delMallEd">Ta bort</button>' : ''}<button class="btn" data-a="logFromMall">Logga nu</button><button class="btn pri" data-a="saveMallEd">Spara måltid</button>`
+    : `${MEAL.id ? '<button class="btn danger" data-a="delMeal">Ta bort</button>' : ''}<button class="btn" data-a="saveAsMall">Spara i Mina måltider</button><button class="btn pri" data-a="saveMeal">Spara</button>`;
+  openSheet(`${sheetHead(title)}<div class="sbody" id="mealBody"></div><div class="sf"><div class="btns">${foot}</div></div>`, { full: true, id: 'meal' });
   renderMealBody();
 }
 function mealRowsHtml() {
-  if (!MEAL.rader.length) return '<div class="empty">Inga livsmedel ännu – välj nedan.</div>';
-  return `<div class="list">${MEAL.rader.map((r, i) => { const x = exclInfo(r.fid); return `<div class="food" style="cursor:default">
+  if (!MEAL.rader.length) return `<div class="empty">Inga ingredienser ännu – sök och väg dem nedan.</div>`;
+  return `<div class="list">${MEAL.rader.map((r, i) => { const x = exclInfo(r.fid); const unit = r.u && r.u !== 'g'; return `<div class="food" style="cursor:default">
     <div class="grow"><div class="n">${esc(r.namn)} ${x ? `<span class="chip ${x.hide.length ? 'bad' : 'warn'}" title="${esc([...x.hide, ...x.warn].join(', '))}">${ICON.warn}</span>` : ''}</div>
-    <div class="m num">${f0(r.n[0] * r.g / 100)} kcal · P ${f1(r.n[1] * r.g / 100)} · K ${f1(r.n[8] * r.g / 100)} · F ${f1(r.n[2] * r.g / 100)} · fib ${f1(r.n[12] * r.g / 100)}</div></div>
-    <div class="qty"><input type="number" inputmode="decimal" step="any" value="${r.g}" data-i="rowG" data-ix="${i}" aria-label="Gram" onfocus="this.select()"><span class="small muted">g</span>
+    <div class="m num" id="rm${i}">${rowMeta(r)}</div></div>
+    <div class="qty"><input type="text" inputmode="decimal" value="${String(unit ? r.q : r.g).replace('.', ',')}" data-i="rowG" data-ix="${i}" aria-label="Mängd" onfocus="this.select()"><span class="small muted">${unit ? r.u : 'g'}</span>
     <button class="icon-btn" data-a="rowDel" data-ix="${i}" aria-label="Ta bort">${ICON.close}</button></div></div>`; }).join('')}</div>`;
 }
+function rowMeta(r) { return `${r.u && r.u !== 'g' ? f0(r.g) + ' g · ' : ''}${f0(r.n[0] * r.g / 100)} kcal · P ${f1(r.n[1] * r.g / 100)} · K ${f1(r.n[8] * r.g / 100)} · F ${f1(r.n[2] * r.g / 100)} · fib ${f1(r.n[12] * r.g / 100)}`; }
 function mealSumHtml() {
-  const n = mealNut(MEAL); const p = mealProfile(n);
-  return `<div class="card" style="margin-bottom:10px"><div class="macros">
+  const n = mealNut(MEAL); const p = mealProfile(n), mm = MEAL.mallMode;
+  return `<div class="card" style="margin-bottom:10px">${mm && portionFactor(MEAL) === 1 && MEAL.portion?.total ? '<div class="xs muted" style="margin-bottom:4px">Hela satsen</div>' : ''}<div class="macros">
     <div><div class="v num">${f0(n.kcal)}</div><div class="l">kcal</div></div><div><div class="v num">${f0(n.prot)}</div><div class="l">protein</div></div>
     <div><div class="v num">${f0(n.kolh)}</div><div class="l">kolh</div></div><div><div class="v num">${f0(n.fett)}</div><div class="l">fett</div></div>
     <div><div class="v num">${f1(n.fiber)}</div><div class="l">fiber</div></div></div>
     ${MEAL.rader.length ? `<span class="chip ${p.cls}">${esc(p.t)}</span>` : ''}
-    ${portionFactor(MEAL) < 1 ? `<div class="note">Din portion: ${f0(MEAL.portion.ata)} av ${f0(MEAL.portion.total)} g (${f0(portionFactor(MEAL) * 100)} %) – värdena ovan gäller portionen.</div>` : ''}
-    ${MEAL.rader.length ? `<div class="note">Råvaror totalt: ${f0(sum(MEAL.rader.map(r => r.g)))} g</div>` : ''}</div>`;
+    ${!mm && portionFactor(MEAL) < 1 ? `<div class="note">Din portion: ${f0(MEAL.portion.ata)} av ${f0(MEAL.portion.total)} g (${f0(portionFactor(MEAL) * 100)} %) – värdena ovan gäller portionen.</div>` : ''}
+    ${MEAL.rader.length ? `<div class="note">${MEAL.rader.length} ingredienser · råvaror totalt ${f0(sum(MEAL.rader.map(r => r.g)))} g${mm && MEAL.portion?.total ? ` · färdig rätt ${f0(MEAL.portion.total)} g` : ''}</div>` : ''}</div>`;
 }
 function renderMealBody() {
   const b = $('#mealBody'); if (!b) return;
-  b.innerHTML = `<div class="seg" style="margin-bottom:8px">${MALTYPER.map(t => `<button class="${t === MEAL.typ ? 'on' : ''}" data-a="mealType" data-v="${t}" style="font-size:12px;padding:7px 2px">${t}</button>`).join('')}</div>
-    <div class="inrow"><div><input type="date" value="${MEAL.datum}" max="${today()}" data-c="mealField" data-k="datum" aria-label="Datum"></div>
-    <div><input type="time" value="${MEAL.tid}" data-c="mealField" data-k="tid" aria-label="Tid"></div></div>
-    <button class="btn block" data-a="aiPhoto" style="margin-top:10px">📷 Fota måltid – AI föreslår innehåll</button>
+  const mm = MEAL.mallMode;
+  const mall = !mm && MEAL.fromMall ? S.mallar.find(m => m.id === MEAL.fromMall) : null;
+  b.innerHTML = (mm ? `<label class="f" style="margin-top:0">Namn på måltiden</label><input type="text" id="mallNamn" value="${esc(MEAL.namn || '')}" placeholder="t.ex. Havregrynsgröt med chia" data-i="mealNamn" style="margin-bottom:10px">` : '')
+    + `<div class="seg" style="margin-bottom:8px">${MALTYPER.map(t => `<button class="${t === MEAL.typ ? 'on' : ''}" data-a="mealType" data-v="${t}" style="font-size:12px;padding:7px 2px">${t}</button>`).join('')}</div>`
+    + (mm ? '' : `<div class="inrow"><div><input type="date" value="${MEAL.datum}" max="${today()}" data-c="mealField" data-k="datum" aria-label="Datum"></div>
+    <div><input type="time" value="${MEAL.tid}" data-c="mealField" data-k="tid" aria-label="Tid"></div></div>`)
+    + `<button class="btn block" data-a="aiPhoto" style="margin-top:10px">📷 Fota måltid – AI föreslår innehåll</button>
     <div id="mealSum" style="margin-top:12px">${mealSumHtml()}</div>
     <div id="mealRows">${mealRowsHtml()}</div>
-    <div class="seg">${[['snabb', 'Sparade'], ['ofta', 'Ofta'], ['sok', 'Sök']].map(([k, l]) => `<button class="${MEALSRC.mode === k || (MEALSRC.mode === 'rader' && k === 'snabb') ? 'on' : ''}" data-a="mealMode" data-m="${k}">${l}</button>`).join('')}</div>
+    ${mall ? `<label class="row" style="margin:-4px 2px 12px;gap:8px"><input type="checkbox" data-c="updMall" ${MEAL.updMall ? 'checked' : ''} style="width:20px;height:20px"><span class="small">Uppdatera "${esc(mall.namn)}" i Mina måltider med de här mängderna</span></label>` : ''}
+    <div class="seg">${[['snabb', 'Mina måltider'], ['ofta', 'Ofta'], ['sok', 'Sök']].map(([k, l]) => `<button class="${MEALSRC.mode === k || (MEALSRC.mode === 'rader' && k === 'snabb') ? 'on' : ''}" data-a="mealMode" data-m="${k}">${l}</button>`).join('')}</div>
     <div id="weighCard" class="hidden"></div>
     <div id="mealPick"></div>
-    <details class="card" ${MEAL.portion ? 'open' : ''} style="margin-top:12px"><summary>Del av en sats</summary>
-      <div class="small muted" style="margin-top:6px">Lagar du en hel sats, t.ex. en gryta? Väg alla råvaror ovan, väg sedan den färdiga rätten och din portion.</div>
-      <div class="inrow"><div><label class="f">Färdig rätt totalt (g)</label><input type="number" inputmode="decimal" step="any" value="${MEAL.portion?.total ?? ''}" data-i="portionF" data-k="total"></div>
-      <div><label class="f">Min portion (g)</label><input type="number" inputmode="decimal" step="any" value="${MEAL.portion?.ata ?? ''}" data-i="portionF" data-k="ata"></div></div>
+    <details class="card" ${MEAL.portion ? 'open' : ''} style="margin-top:12px"><summary>${mm ? 'Satsens färdiga vikt' : 'Del av en sats'}</summary>
+      <div class="small muted" style="margin-top:6px">${mm ? 'Lagar du en hel sats? Ange vad den färdiga rätten brukar väga. När du loggar anger du bara vikten på din portion.' : 'Lagar du en hel sats, t.ex. en gryta? Väg alla råvaror ovan, väg sedan den färdiga rätten och din portion.'}</div>
+      <div class="inrow"><div><label class="f">Färdig rätt totalt (g)</label><input type="text" inputmode="decimal" value="${MEAL.portion?.total ?? ''}" data-i="portionF" data-k="total"></div>
+      ${mm ? '' : `<div><label class="f">Min portion (g)</label><input type="text" inputmode="decimal" value="${MEAL.portion?.ata ?? ''}" data-i="portionF" data-k="ata"></div>`}</div>
       <div class="note">Lämna tomt om du äter allt. Vatten som kokar bort påverkar inte näringen – bara hur stor andel du äter.</div></details>`;
   renderMealPick();
 }
@@ -592,17 +608,20 @@ function searchFoods(q, showHidden) {
   }
   return res.sort((a, b) => a[0] - b[0]).slice(0, 60).map(r => r[1]);
 }
+function mallNut(m) { return mealNut({ rader: m.rader.map(rowFromStored).filter(Boolean) }); }
+const sortedMallar = () => [...S.mallar].sort((a, b) => (b.anv || 0) - (a.anv || 0) || a.namn.localeCompare(b.namn, 'sv'));
 function renderMealPick() {
   const el = $('#mealPick'); if (!el) return;
   const mode = MEALSRC.mode === 'rader' ? 'snabb' : MEALSRC.mode;
   if (mode === 'snabb') {
-    el.innerHTML = S.mallar.length ? `<div class="list">${S.mallar.map(m => { const n = mealNut({ rader: m.rader.map(r => snapRow(r.fid, r.g)).filter(Boolean) }); return `<button class="li" data-a="useMall" data-id="${m.id}"><div class="t"><div>${esc(m.namn)}</div><div class="small muted num">${f0(n.kcal)} kcal · P ${f0(n.prot)} · K ${f0(n.kolh)} · fiber ${f0(n.fiber)} · ${m.rader.length} livsmedel</div></div><span class="chip out">${ICON.plus.replace('<svg', '<svg width="14" height="14"')}</span></button>`; }).join('')}</div><div class="note">Ett tryck lägger till hela måltiden. Justera sedan gram ovan.</div>`
-      : '<div class="empty">Inga sparade måltider ännu. Bygg en måltid och tryck "Spara som snabbval".</div>';
+    const list = sortedMallar().filter(m => !MEAL.mallMode || m.id !== MEAL.id);
+    el.innerHTML = list.length ? `<div class="list">${list.map(m => { const n = mallNut(m); return `<button class="li" data-a="useMall" data-id="${m.id}"><div class="t"><div>${esc(m.namn)}</div><div class="small muted num">${f0(n.kcal)} kcal · P ${f0(n.prot)} · K ${f0(n.kolh)} · fiber ${f0(n.fiber)} · ${m.rader.length} ingredienser</div></div><span class="chip out">${ICON.plus.replace('<svg', '<svg width="14" height="14"')}</span></button>`; }).join('')}</div><div class="note">Ett tryck lägger till hela måltiden. Justera sedan mängderna ovan.</div>`
+      : '<div class="empty">Inga sparade måltider ännu. Sök fram ingredienserna, väg dem och spara i Mina måltider.</div>';
   } else if (mode === 'ofta') {
     const top = Object.entries(S.anvandning).sort((a, b) => b[1].n - a[1].n).slice(0, 30).map(([fid, u]) => ({ f: getFood(isNaN(fid) ? fid : +fid), u })).filter(x => x.f);
-    el.innerHTML = top.length ? `<div class="list">${top.map(x => foodLine(x.f, `· senast ${f0(x.u.g)} g`)).join('')}</div>` : '<div class="empty">Här samlas livsmedel du loggar ofta.</div>';
+    el.innerHTML = top.length ? `<div class="list">${top.map(x => foodLine(x.f, `· senast ${x.u.u && x.u.u !== 'g' ? f1(x.u.q) + ' ' + x.u.u : f0(x.u.g) + ' g'}`)).join('')}</div>` : '<div class="empty">Här samlas ingredienser du använder ofta.</div>';
   } else {
-    el.innerHTML = `<input type="search" placeholder="Sök, t.ex. kyckling, havregryn" value="${esc(MEALSRC.q)}" data-i="mealSearch" id="mealQ" autocomplete="off">
+    el.innerHTML = `<input type="search" placeholder="Sök, t.ex. havregryn, chia, mjölk" value="${esc(MEALSRC.q)}" data-i="mealSearch" id="mealQ" autocomplete="off">
       <div class="row sb" style="margin:8px 2px"><span class="small muted">Visa även uteslutna</span><label class="tog"><input type="checkbox" ${MEALSRC.showHidden ? 'checked' : ''} data-c="mealShowHidden"><span></span></label></div>
       <div id="mealRes"></div><button class="btn block" data-a="newOwnFood" style="margin-top:8px">${ICON.plus} Nytt eget livsmedel</button>
       <div class="note">Källa: Livsmedelsverkets livsmedelsdatabas (CC BY 4.0). Uteslutna livsmedel döljs; ${ICON.warn} betyder att en ingrediens kan matcha din lista. Kontrollera alltid förpackningen.</div>`;
@@ -615,97 +634,155 @@ function renderMealRes() {
   const r = searchFoods(MEALSRC.q, MEALSRC.showHidden);
   el.innerHTML = MEALSRC.q ? (r.length ? `<div class="list">${r.map(f => foodLine(f)).join('')}</div>` : '<div class="empty">Inga träffar. Prova ett kortare ord.</div>') : '';
 }
-ACT.mealMode = el => { MEALSRC.mode = el.dataset.m; $$('#mealBody .seg button').forEach(b => b.classList.toggle('on', b === el)); renderMealPick(); if (MEALSRC.mode === 'sok') setTimeout(() => { const q = $('#mealQ'); if (q) { q.focus(); q.scrollIntoView({ block: 'start', behavior: 'smooth' }); } }, 60); };
+ACT.mealMode = el => { MEALSRC.mode = el.dataset.m; $$('#mealBody .seg button[data-a="mealMode"]').forEach(b => b.classList.toggle('on', b === el)); renderMealPick(); if (MEALSRC.mode === 'sok') setTimeout(() => { const q = $('#mealQ'); if (q) { q.focus(); q.scrollIntoView({ block: 'start', behavior: 'smooth' }); } }, 60); };
 ACT.mealSearch = el => { if (MEALSRC.pending) ACT.weighCancel(); MEALSRC.q = el.value; clearTimeout(ACT._ms); ACT._ms = setTimeout(renderMealRes, 120); };
 ACT.mealShowHidden = el => { MEALSRC.showHidden = el.checked; renderMealRes(); };
 ACT.mealField = el => { MEAL[el.dataset.k] = el.value; };
+ACT.mealNamn = el => { MEAL.namn = el.value; };
+ACT.updMall = el => { MEAL.updMall = el.checked; };
 ACT.portionF = el => {
   const p = MEAL.portion || {}; p[el.dataset.k] = pnum(el.value);
-  MEAL.portion = (p.total && p.ata) || p.total || p.ata ? p : null; refreshMealParts();
+  MEAL.portion = p.total || p.ata ? p : null; refreshMealParts();
 };
 ACT.mealType = el => { MEAL.typ = el.dataset.v; $$('[data-a="mealType"]').forEach(b => b.classList.toggle('on', b === el)); };
+
+/* ---------- väg/mät en ingrediens ---------- */
 ACT.addFood = el => {
   const fid = isNaN(el.dataset.fid) ? el.dataset.fid : +el.dataset.fid;
   const f = getFood(fid); if (!f) return;
-  MEALSRC.pending = fid;
-  const last = S.anvandning[fid]?.g;
+  const last = S.anvandning[fid];
+  MEALSRC.pending = fid; MEALSRC.unit = last?.u || 'g';
   const x = exclInfo(fid);
   const card = $('#weighCard');
   card.innerHTML = `<div class="card" style="border-color:var(--acc)">
     <div class="row sb"><div class="grow"><div class="b">${esc(f.namn)}</div><div class="xs muted">per 100 g: ${f0(f.n[0])} kcal · P ${f1(f.n[1])} · K ${f1(f.n[8])} · F ${f1(f.n[2])} · fiber ${f1(f.n[12])}</div></div>
     <button class="icon-btn" data-a="weighCancel" aria-label="Avbryt">${ICON.close}</button></div>
     ${x && x.hide.length ? `<div class="chip bad" style="margin-top:6px">${esc(x.hide.join(', '))}</div>` : x ? `<div class="chip warn" style="margin-top:6px">${ICON.warn} kan innehålla ${esc(x.warn.join(', ').toLowerCase())}</div>` : ''}
-    <div class="row" style="margin-top:10px;gap:8px"><input type="text" inputmode="decimal" autocomplete="off" id="weighG" value="${last ?? ''}" placeholder="Vikt" data-i="weighInput" style="font-size:22px;font-weight:600;text-align:right;flex:1"><span class="b">gram</span></div>
-    <div class="btns" style="margin-top:8px">${[...new Set([last, 10, 25, 50, 100].filter(Boolean))].slice(0, 4).map(g => `<button class="btn sm" style="white-space:nowrap" data-a="weighQuick" data-g="${g}">${f0(g)} g</button>`).join('')}</div>
+    <div class="seg" id="unitSeg" style="margin:10px 0 8px">${ENHETER.map(([k, l]) => `<button class="${k === MEALSRC.unit ? 'on' : ''}" data-a="weighUnit" data-u="${k}">${l}</button>`).join('')}</div>
+    <div class="row" style="gap:8px"><input type="text" inputmode="decimal" autocomplete="off" id="weighG" value="" placeholder="Mängd" data-i="weighInput" style="font-size:22px;font-weight:600;text-align:right;flex:1"><span class="b" id="weighUnitLbl" style="min-width:44px"></span></div>
+    <div id="convRow" class="row hidden" style="gap:8px;margin-top:8px"><span class="small" id="convLbl" style="flex:1"></span><input type="text" inputmode="decimal" id="weighConv" data-i="weighInput" style="width:90px;text-align:right"><span class="small">g</span></div>
+    <div class="note hidden" id="convNote"></div>
+    <div class="btns" id="weighQuick" style="margin-top:8px"></div>
     <div id="weighPrev" class="small muted num" style="margin:8px 0"></div>
-    <button class="btn pri block" data-a="weighAdd">Lägg till i måltiden</button></div>`;
+    <button class="btn pri block" data-a="weighAdd">Lägg till</button></div>`;
   card.classList.remove('hidden');
+  setWeighUnit(MEALSRC.unit, last);
   const inp = $('#weighG'); inp.focus(); inp.select();
-  updateWeighPrev();
   card.scrollIntoView({ block: 'start', behavior: 'smooth' });
 };
+function setWeighUnit(u, last) {
+  MEALSRC.unit = u; const fid = MEALSRC.pending;
+  $$('#unitSeg button').forEach(b => b.classList.toggle('on', b.dataset.u === u));
+  $('#weighUnitLbl').textContent = u === 'g' ? 'gram' : u;
+  const conv = (S.enheter[fid] || {})[u] ?? ENHET_STD[u] ?? '';
+  $('#convRow').classList.toggle('hidden', u === 'g');
+  $('#convLbl').textContent = `1 ${u} väger`;
+  $('#weighConv').value = u === 'g' ? '' : String(conv).replace('.', ',');
+  const note = $('#convNote'); const known = (S.enheter[fid] || {})[u] != null;
+  note.classList.toggle('hidden', u === 'g');
+  note.textContent = known ? 'Sparad omräkning för det här livsmedlet – ändra om den inte stämmer.' : u === 'st' ? 'Väg en bit en gång och skriv in vikten – den sparas för nästa gång.' : `Standard ${ENHET_STD[u]} g (som vatten). Torra varor väger mindre – t.ex. havregryn ca 35 g/dl. Justeringen sparas för det här livsmedlet.`;
+  if (last && (last.u || 'g') === u) $('#weighG').value = String(u === 'g' ? last.g : last.q).replace('.', ',');
+  $('#weighQuick').innerHTML = QUICK[u].map(v => `<button class="btn sm" style="white-space:nowrap" data-a="weighQuick" data-g="${v}">${f1(v)} ${u}</button>`).join('');
+  updateWeighPrev();
+}
+ACT.weighUnit = el => { setWeighUnit(el.dataset.u); $('#weighG').focus(); };
+function weighGrams() {
+  const q = pnum($('#weighG')?.value); if (!q) return null;
+  if (MEALSRC.unit === 'g') return { g: q };
+  const conv = pnum($('#weighConv').value); if (!conv) return { q, need: true };
+  return { g: q * conv, q, conv };
+}
 function updateWeighPrev() {
-  const f = getFood(MEALSRC.pending), g = pnum($('#weighG')?.value), el = $('#weighPrev'); if (!f || !el) return;
-  el.innerHTML = g ? `${f0(g)} g ger ${f0(f.n[0] * g / 100)} kcal · protein ${f1(f.n[1] * g / 100)} g · kolh ${f1(f.n[8] * g / 100)} g · fett ${f1(f.n[2] * g / 100)} g · fiber ${f1(f.n[12] * g / 100)} g` : 'Ange vikten du vägt upp.';
+  const f = getFood(MEALSRC.pending), el = $('#weighPrev'); if (!f || !el) return;
+  const w = weighGrams();
+  el.innerHTML = !w ? 'Ange mängden du vägt eller mätt upp.' : w.need ? `Ange hur mycket 1 ${MEALSRC.unit} väger.` : `${MEALSRC.unit !== 'g' ? f1(w.q) + ' ' + MEALSRC.unit + ' = ' : ''}${f0(w.g)} g ger ${f0(f.n[0] * w.g / 100)} kcal · protein ${f1(f.n[1] * w.g / 100)} g · kolh ${f1(f.n[8] * w.g / 100)} g · fett ${f1(f.n[2] * w.g / 100)} g · fiber ${f1(f.n[12] * w.g / 100)} g`;
 }
 ACT.weighInput = () => updateWeighPrev();
-ACT.weighQuick = el => { $('#weighG').value = el.dataset.g; updateWeighPrev(); };
+ACT.weighQuick = el => { $('#weighG').value = el.dataset.g.replace('.', ','); updateWeighPrev(); };
 ACT.weighCancel = () => { MEALSRC.pending = null; const c = $('#weighCard'); c.innerHTML = ''; c.classList.add('hidden'); };
 ACT.weighAdd = () => {
-  const g = pnum($('#weighG').value); if (!g || g <= 0) { toast('Ange vikt i gram'); $('#weighG').focus(); return; }
-  const r = snapRow(MEALSRC.pending, g); if (!r) return;
+  const w = weighGrams();
+  if (!w) { toast('Ange en mängd'); $('#weighG').focus(); return; }
+  if (w.need) { toast(`Ange vad 1 ${MEALSRC.unit} väger`); $('#weighConv').focus(); return; }
+  const r = snapRow(MEALSRC.pending, Math.round(w.g * 10) / 10); if (!r) return;
+  if (MEALSRC.unit !== 'g') { Object.assign(r, { u: MEALSRC.unit, q: w.q, conv: w.conv }); S.enheter[r.fid] = { ...(S.enheter[r.fid] || {}), [MEALSRC.unit]: w.conv }; save({ noSync: true }); }
   MEAL.rader.push(r); ACT.weighCancel();
   $('#mealRows').innerHTML = mealRowsHtml(); refreshMealParts();
-  toast(`${r.namn} ${f0(g)} g tillagd`, 1400);
+  toast(`${r.namn} ${qtyTxt(r)} tillagd`, 1400);
   const q = $('#mealQ'); if (q) { q.focus(); q.select(); }
 };
 ACT.useMall = el => {
   const m = S.mallar.find(x => x.id === el.dataset.id); if (!m) return;
-  m.rader.forEach(r => { const s = snapRow(r.fid, r.g); if (s) MEAL.rader.push(s); });
-  if (!MEAL.namn) MEAL.namn = m.namn;
-  $('#mealRows').innerHTML = mealRowsHtml(); refreshMealParts(); toast(`${m.namn} tillagd`, 1200);
+  m.rader.forEach(r => { const s = rowFromStored(r); if (s) MEAL.rader.push(s); });
+  if (!MEAL.mallMode) { if (!MEAL.namn) MEAL.namn = m.namn; if (!MEAL.fromMall) MEAL.fromMall = m.id; if (m.portion?.total && !MEAL.portion) MEAL.portion = { total: m.portion.total, ata: null }; }
+  renderMealBody(); toast(`${m.namn} tillagd`, 1200);
 };
-ACT.rowG = el => { const v = pnum(el.value); if (v == null) return; MEAL.rader[+el.dataset.ix].g = v; refreshMealParts(); };
+ACT.rowG = el => {
+  const v = pnum(el.value); if (v == null) return; const i = +el.dataset.ix, r = MEAL.rader[i];
+  if (r.u && r.u !== 'g') { r.q = v; r.g = Math.round(v * r.conv * 10) / 10; } else r.g = v;
+  const m = $('#rm' + i); if (m) m.innerHTML = rowMeta(r); refreshMealParts();
+};
 ACT.rowDel = el => { MEAL.rader.splice(+el.dataset.ix, 1); $('#mealRows').innerHTML = mealRowsHtml(); refreshMealParts(); };
+function noteUsage(rows) { rows.forEach(r => { const u = S.anvandning[r.fid] || { n: 0 }; u.n++; u.g = r.g; if (r.u && r.u !== 'g') { u.u = r.u; u.q = r.q; } else { delete u.u; delete u.q; } S.anvandning[r.fid] = u; }); }
+
+/* ---------- spara loggad måltid ---------- */
 ACT.saveMeal = () => {
-  if (!MEAL.rader.length) { toast('Lägg till minst ett livsmedel'); return; }
-  MEAL.rader.forEach(r => { const u = S.anvandning[r.fid] || { n: 0, g: r.g }; u.n++; u.g = r.g; S.anvandning[r.fid] = u; });
-  if (MEAL.id) { const i = S.maltider.findIndex(x => x.id === MEAL.id); S.maltider[i] = MEAL; }
-  else { MEAL.id = uid(); S.maltider.push(MEAL); }
-  save(); closeSheet(); UI.kostDag = MEAL.datum; render(); toast('Måltiden sparad');
+  if (!MEAL.rader.length) { toast('Lägg till minst en ingrediens'); return; }
+  noteUsage(MEAL.rader);
+  const isNew = !MEAL.id;
+  if (MEAL.fromMall) {
+    const m = S.mallar.find(x => x.id === MEAL.fromMall);
+    if (m) { if (isNew) m.anv = (m.anv || 0) + 1; if (MEAL.updMall) { m.rader = MEAL.rader.map(rowToStored); if (MEAL.portion?.total) m.portion = { total: MEAL.portion.total }; } }
+  }
+  const updated = MEAL.updMall; delete MEAL.updMall;
+  if (isNew) { MEAL.id = uid(); S.maltider.push(MEAL); } else { const i = S.maltider.findIndex(x => x.id === MEAL.id); S.maltider[i] = MEAL; }
+  save(); closeSheet(); UI.kostDag = MEAL.datum; render(); toast(updated ? 'Måltiden sparad och Mina måltider uppdaterad' : 'Måltiden sparad');
 };
-ACT.delMeal = () => confirmBox('Ta bort måltiden?', 'Ta bort', () => { S.maltider = S.maltider.filter(x => x.id !== MEAL.id); save(); render(); });
+ACT.delMeal = () => confirmBox('Ta bort den loggade måltiden?', 'Ta bort', () => { S.maltider = S.maltider.filter(x => x.id !== MEAL.id); save(); render(); });
 ACT.saveAsMall = () => {
-  if (!MEAL.rader.length) { toast('Lägg till livsmedel först'); return; }
-  const namn = prompt('Namn på snabbvalet', MEAL.namn || MEAL.typ); if (!namn) return;
-  S.mallar.push({ id: uid(), namn, typ: MEAL.typ, rader: MEAL.rader.map(r => ({ fid: r.fid, g: r.g })) });
-  MEAL.namn = namn; save(); toast('Sparad som snabbval');
+  if (!MEAL.rader.length) { toast('Lägg till ingredienser först'); return; }
+  const namn = prompt('Namn i Mina måltider', MEAL.namn || MEAL.typ); if (!namn) return;
+  const m = { id: uid(), namn: namn.trim(), typ: MEAL.typ, rader: MEAL.rader.map(rowToStored), portion: MEAL.portion?.total ? { total: MEAL.portion.total } : null, anv: 1 };
+  S.mallar.push(m); MEAL.namn = m.namn; MEAL.fromMall = m.id; save(); toast(`"${m.namn}" sparad i Mina måltider`);
 };
 
-/* ---------- sparade måltider (mallar) ---------- */
-let MALL = null;
+/* ---------- Mina måltider ---------- */
 ACT.manageMallar = () => {
-  openSheet(`${sheetHead('Sparade måltider')}<div class="sbody">
-    ${S.mallar.length ? `<div class="list">${S.mallar.map(m => `<button class="li" data-a="editMall" data-id="${m.id}"><div class="t"><div>${esc(m.namn)}</div><div class="small muted">${esc(m.typ || '')} · ${m.rader.map(r => esc(getFood(r.fid)?.namn || '?')).join(', ')}</div></div></button>`).join('')}</div>` : '<div class="empty">Inga sparade måltider.</div>'}
-    <div class="note">Nya snabbval skapar du enklast genom att bygga en måltid och trycka "Spara som snabbval".</div></div>`);
+  const list = sortedMallar();
+  openSheet(`${sheetHead('Mina måltider')}<div class="sbody">
+    <p class="small muted" style="margin-top:0">Bygg dina vanliga måltider av ingredienser du väger eller mäter. Logga dem sedan med ett tryck och justera mängderna vid behov.</p>
+    <button class="btn pri block" data-a="newMall" style="margin-bottom:12px">${ICON.plus} Ny måltid</button>
+    ${list.length ? `<div class="list">${list.map(m => { const n = mallNut(m); return `<div class="li" style="cursor:default;align-items:flex-start">
+      <button class="t" data-a="editMall" data-id="${m.id}" style="background:none;border:0;text-align:left;padding:0;cursor:pointer;color:inherit;font:inherit">
+        <div><b>${esc(m.namn)}</b> <span class="chip out">${esc(m.typ || '')}</span></div>
+        <div class="small muted num">${f0(n.kcal)} kcal · P ${f0(n.prot)} · K ${f0(n.kolh)} · F ${f0(n.fett)} · fiber ${f1(n.fiber)}</div>
+        <div class="xs faint">${m.rader.map(r => esc((getFood(r.fid)?.namn || '?').split(/[ ,]/)[0]) + ' ' + qtyTxt(r)).join(' · ')}${m.portion?.total ? ` · sats ${f0(m.portion.total)} g` : ''}${m.anv ? ` · loggad ${m.anv} ggr` : ''}</div></button>
+      <button class="btn sm pri" data-a="logMall" data-id="${m.id}" style="flex:0 0 auto">Logga</button></div>`; }).join('')}</div>` : '<div class="empty">Inga måltider ännu. Tryck "Ny måltid" och lägg till ingredienserna en i taget.</div>'}</div>`, { id: 'mallar' });
 };
+ACT.newMall = () => { MEAL = { mallMode: true, id: null, namn: '', typ: guessType(), rader: [], portion: null }; MEALSRC = { q: '', mode: 'sok', showHidden: false }; openMealEditor(); setTimeout(() => $('#mallNamn')?.focus(), 80); };
 ACT.editMall = el => {
-  MALL = clone(S.mallar.find(m => m.id === el.dataset.id)); if (!MALL) return;
-  const body = () => `<label class="f">Namn</label><input type="text" value="${esc(MALL.namn)}" data-i="mallName">
-    <label class="f">Typ</label><select data-c="mallType">${MALTYPER.map(t => `<option ${t === MALL.typ ? 'selected' : ''}>${t}</option>`).join('')}</select>
-    <label class="f">Livsmedel och gram</label><div class="list">${MALL.rader.map((r, i) => `<div class="food" style="cursor:default"><div class="grow n">${esc(getFood(r.fid)?.namn || 'Okänt livsmedel')}</div>
-    <div class="qty"><input type="number" inputmode="decimal" value="${r.g}" data-i="mallG" data-ix="${i}"><span class="small muted">g</span><button class="icon-btn" data-a="mallRowDel" data-ix="${i}">${ICON.close}</button></div></div>`).join('')}</div>
-    <label class="f">Skala hela måltiden</label><div class="btns">${[0.5, 0.75, 1.25, 1.5, 2].map(x => `<button class="btn sm" data-a="mallScale" data-x="${x}">×${String(x).replace('.', ',')}</button>`).join('')}</div>`;
-  openSheet(`${sheetHead('Redigera snabbval')}<div class="sbody" id="mallBody">${body()}</div><div class="sf"><div class="btns"><button class="btn danger" data-a="delMall">Ta bort</button><button class="btn pri" data-a="saveMall">Spara</button></div></div>`);
-  ACT._mallBody = body;
+  const m = S.mallar.find(x => x.id === el.dataset.id); if (!m) return;
+  MEAL = { mallMode: true, id: m.id, namn: m.namn, typ: m.typ || guessType(), rader: m.rader.map(rowFromStored).filter(Boolean), portion: m.portion ? { ...m.portion } : null };
+  MEALSRC = { q: '', mode: 'sok', showHidden: false }; openMealEditor();
 };
-ACT.mallName = el => MALL.namn = el.value;
-ACT.mallType = el => MALL.typ = el.value;
-ACT.mallG = el => { const v = pnum(el.value); if (v != null) MALL.rader[+el.dataset.ix].g = v; };
-ACT.mallRowDel = el => { MALL.rader.splice(+el.dataset.ix, 1); $('#mallBody').innerHTML = ACT._mallBody(); };
-ACT.mallScale = el => { MALL.rader.forEach(r => r.g = Math.round(r.g * +el.dataset.x)); $('#mallBody').innerHTML = ACT._mallBody(); };
-ACT.saveMall = () => { const i = S.mallar.findIndex(m => m.id === MALL.id); S.mallar[i] = MALL; save(); ACT.manageMallar(); render(); };
-ACT.delMall = () => confirmBox(`Ta bort snabbvalet "${MALL.namn}"?`, 'Ta bort', () => { S.mallar = S.mallar.filter(m => m.id !== MALL.id); save(); render(); ACT.manageMallar(); });
+function mallFromEditor() {
+  const namn = (MEAL.namn || '').trim();
+  if (!namn) { toast('Ge måltiden ett namn'); $('#mallNamn')?.focus(); return null; }
+  if (!MEAL.rader.length) { toast('Lägg till minst en ingrediens'); return null; }
+  const old = MEAL.id ? S.mallar.find(x => x.id === MEAL.id) : null;
+  const m = { id: MEAL.id || uid(), namn, typ: MEAL.typ, rader: MEAL.rader.map(rowToStored), portion: MEAL.portion?.total ? { total: MEAL.portion.total } : null, anv: old?.anv || 0 };
+  if (old) S.mallar[S.mallar.indexOf(old)] = m; else S.mallar.push(m);
+  save(); return m;
+}
+ACT.saveMallEd = () => { const m = mallFromEditor(); if (!m) return; closeSheet(); render(); ACT.manageMallar(); toast(`"${m.namn}" sparad`); };
+function logFromMallObj(m) {
+  MEAL = { id: null, datum: UI.tab === 'kost' ? (UI.kostDag || today()) : today(), tid: nowTime(), typ: m.typ || guessType(), namn: m.namn, fromMall: m.id, rader: m.rader.map(rowFromStored).filter(Boolean), portion: m.portion?.total ? { total: m.portion.total, ata: null } : null };
+  MEALSRC = { q: '', mode: 'rader', showHidden: false }; openMealEditor();
+  if (MEAL.portion) toast('Ange vikten på din portion under "Del av en sats"', 3000);
+}
+ACT.logFromMall = () => { const m = mallFromEditor(); if (m) logFromMallObj(m); };
+ACT.logMall = el => { const m = S.mallar.find(x => x.id === el.dataset.id); if (m) logFromMallObj(m); };
+ACT.delMallEd = () => confirmBox(`Ta bort "${MEAL.namn}" från Mina måltider? Redan loggade måltider påverkas inte.`, 'Ta bort', () => { S.mallar = S.mallar.filter(m => m.id !== MEAL.id); save(); render(); ACT.manageMallar(); });
 
 /* ---------- inköpslista ---------- */
 let SHOP = {};

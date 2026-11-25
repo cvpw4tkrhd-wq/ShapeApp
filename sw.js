@@ -1,5 +1,5 @@
 /* ShapeApp service worker – fungerar offline. Höj VERSION vid ny release. */
-const VERSION = 'shapeapp-v1.2.0';
+const VERSION = 'shapeapp-v1.3.0';
 const ASSETS = ['./', './index.html', './app.js', './livsmedel.json', './manifest.json', './icon.svg', './favicon.png', './apple-touch-icon.png', './icon-192.png', './icon-512.png'];
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(VERSION).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting()));
