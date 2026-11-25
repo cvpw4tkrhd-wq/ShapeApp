@@ -1,6 +1,6 @@
 'use strict';
 /* ShapeApp – kost, styrka, kondition och hälsologg. All data lagras lokalt (IndexedDB). */
-const APP_VERSION = '1.3.0';
+const APP_VERSION = '1.3.1';
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -346,7 +346,8 @@ function exclusionFor(f) {
   for (const c of S.uteslut) {
     if (!c.aktiv) continue;
     if (f.egen) { if ((f.taggar || []).includes(c.id) || catHit(c, f.namn)) res.hide.push(c.namn); continue; }
-    if ((c.grupper || []).includes(f.grupp) || catHit(c, f.namn)) { res.hide.push(c.namn); continue; }
+    const undantag = (c.undantag || []).some(u => u && f.lc.includes(u.toLowerCase()));
+    if ((!undantag && (c.grupper || []).includes(f.grupp)) || catHit(c, f.namn)) { res.hide.push(c.namn); continue; }
     if ((f.rav || []).some(i => catHit(c, FOOD.vocab[i] || ''))) res.warn.push(c.namn);
   }
   return res;
@@ -590,22 +591,47 @@ function foodLine(f, extra = '') {
     <div class="grow"><div class="n">${esc(f.namn)}</div><div class="m num">${f0(f.n[0])} kcal · P ${f1(f.n[1])} · K ${f1(f.n[8])} · F ${f1(f.n[2])} · fib ${f1(f.n[12])} /100 g ${extra}</div>${flag ? `<div style="margin-top:3px">${flag}</div>` : ''}</div>
     <span class="chip out">${ICON.plus.replace('<svg', '<svg width="14" height="14"')}</span></div>`;
 }
-function searchFoods(q, showHidden) {
-  const toks = q.toLowerCase().split(/\s+/).filter(Boolean);
-  if (!toks.length) return [];
-  const res = [];
+// Sökning som klarar sammansatta ord (kycklingbröst → Kyckling bröstfilé), synonymer och visar dolda träffar
+const SYNONYMER = { 'knäckebröd': 'hårt bröd', 'knäcke': 'hårt bröd', 'köttfärs': 'nöt färs', 'blandfärs': 'blandfärs', 'cottage cheese': 'keso', 'cottage': 'keso', 'kycklingfilé': 'kyckling bröstfilé', 'kycklingbröst': 'kyckling bröstfilé', 'kycklinglår': 'kyckling lår', 'fläskkarré': 'gris karré', 'fläskfilé': 'gris fläskfilé', 'nötkött': 'nöt', 'oxfilé': 'nöt filé', 'quinoa': 'mjölmålla quinoa', 'mellanmjölk': 'mjölk fett 1,5%', 'lättmjölk': 'mjölk fett 0,5%', 'standardmjölk': 'mjölk fett 3%', 'kokt ägg': 'ägg kokt', 'stekt ägg': 'ägg stekt', 'fullkornsris': 'ris fullkorn', 'råris': 'ris fullkorn', 'fullkornspasta': 'pasta fullkorn', 'vetemjöl': 'mjöl vete', 'grekisk yoghurt': 'yoghurt grekisk', 'kesella': 'kvarg', 'sötmandel': 'mandel' };
+const MIX_GROUPS = /rätter|pizza|pajer|soppor|såser|smörgås|bakverk|kakor|tårt|glass|godis|dessert|snacks/i;
+const norm = s => s.toLowerCase().replace(/[^a-zåäöéü0-9%]/g, '');
+function tokenHit(f, t) {
+  if (t.length <= 3) { if (!f.words) f.words = f.lc.split(/[\s,./()-]+/); return f.words.some(w => w.startsWith(t)) ? 3 : 0; }
+  if (f.lc.includes(t)) return 3;
+  if (!f.lcn) f.lcn = norm(f.namn);
+  if (t.length >= 7 && f.lcn.includes(norm(t))) return 2;
+  if (t.length >= 6) { // dela sammansatt ord: basmati|ris, fullkorns|pasta
+    for (let i = 3; i <= t.length - 3; i++) {
+      let a = t.slice(0, i); const b = t.slice(i);
+      if (a.endsWith('s') && a.length > 3 && !f.lc.includes(a)) a = a.slice(0, -1);
+      if (f.lc.includes(a) && f.lc.includes(b)) return 1;
+    }
+  }
+  return 0;
+}
+function searchFoods(q, showHidden, info) {
+  let ql = q.toLowerCase().trim(); if (!ql) return [];
+  if (SYNONYMER[ql]) ql = SYNONYMER[ql];
+  const toks = ql.split(/\s+/).filter(Boolean).map(t => SYNONYMER[t] || t).join(' ').split(/\s+/);
+  const res = []; let hidden = 0; const hiddenWhy = new Set();
   for (const f of FOOD.byId.values()) {
-    if (!toks.every(t => f.lc.includes(t))) continue;
-    const x = exclInfo(f.id); if (x && x.hide.length && !showHidden) continue;
-    let sc = 0;
-    if (f.egen) sc -= 1000;
-    sc -= (S.anvandning[f.id]?.n || 0) * 20;
-    if (f.lc === q.toLowerCase().trim()) sc -= 600;
-    if (f.lc.startsWith(toks[0])) sc -= 200;
+    let hit = 0; for (const t of toks) { const h = tokenHit(f, t); if (!h) { hit = 0; break; } hit += h; }
+    if (!hit) continue;
+    const x = exclInfo(f.id);
+    if (x && x.hide.length && !showHidden) { hidden++; x.hide.forEach(w => hiddenWhy.add(w)); continue; }
+    const first = f.lc.split(/[\s,]+/)[0];
+    let sc = (3 * toks.length - hit) * 60;
+    if (f.egen || String(f.id).startsWith('b:')) sc -= 1000;
+    sc -= (S.anvandning[f.id]?.n || 0) * 25;
+    if (f.lc === ql) sc -= 600;
+    if (first === toks[0]) sc -= 250; else if (f.lc.startsWith(toks[0])) sc -= 120;
+    if (/\brå\b|\bfärsk\b|\bokokt\b/.test(f.lc)) sc -= 60;
+    if (f.a === 2 || MIX_GROUPS.test(f.grupp || '')) sc += 120;
     if (x && x.warn.length) sc += 150;
-    sc += f.lc.length;
+    sc += f.lc.length * 1.5;
     res.push([sc, f]);
   }
+  if (info) { info.hidden = hidden; info.why = [...hiddenWhy]; }
   return res.sort((a, b) => a[0] - b[0]).slice(0, 60).map(r => r[1]);
 }
 function mallNut(m) { return mealNut({ rader: m.rader.map(rowFromStored).filter(Boolean) }); }
@@ -631,12 +657,14 @@ function renderMealPick() {
 function renderMealRes() {
   const el = $('#mealRes'); if (!el) return;
   if (!FOOD.loaded) { el.innerHTML = '<div class="empty">Livsmedelsdatabasen kunde inte laddas. Egna livsmedel fungerar ändå.</div>'; }
-  const r = searchFoods(MEALSRC.q, MEALSRC.showHidden);
-  el.innerHTML = MEALSRC.q ? (r.length ? `<div class="list">${r.map(f => foodLine(f)).join('')}</div>` : '<div class="empty">Inga träffar. Prova ett kortare ord.</div>') : '';
+  const info = {}; const r = searchFoods(MEALSRC.q, MEALSRC.showHidden, info);
+  const hid = info.hidden ? `<button class="btn ghost sm" data-a="showHiddenNow" style="margin:0 0 6px;padding-left:2px">${info.hidden} ${info.hidden === 1 ? 'träff dold' : 'träffar dolda'} (${esc(info.why.join(', ').toLowerCase())}) – visa</button>` : '';
+  el.innerHTML = MEALSRC.q ? hid + (r.length ? `<div class="list">${r.map(f => foodLine(f)).join('')}</div>` : `<div class="empty">Inga träffar${info.hidden ? ' bland dina tillåtna livsmedel' : ''}. Prova ett kortare ord eller lägg till ett eget livsmedel.</div>`) : '';
 }
 ACT.mealMode = el => { MEALSRC.mode = el.dataset.m; $$('#mealBody .seg button[data-a="mealMode"]').forEach(b => b.classList.toggle('on', b === el)); renderMealPick(); if (MEALSRC.mode === 'sok') setTimeout(() => { const q = $('#mealQ'); if (q) { q.focus(); q.scrollIntoView({ block: 'start', behavior: 'smooth' }); } }, 60); };
 ACT.mealSearch = el => { if (MEALSRC.pending) ACT.weighCancel(); MEALSRC.q = el.value; clearTimeout(ACT._ms); ACT._ms = setTimeout(renderMealRes, 120); };
 ACT.mealShowHidden = el => { MEALSRC.showHidden = el.checked; renderMealRes(); };
+ACT.showHiddenNow = () => { MEALSRC.showHidden = true; const t = $('[data-c="mealShowHidden"]'); if (t) t.checked = true; renderMealRes(); };
 ACT.mealField = el => { MEAL[el.dataset.k] = el.value; };
 ACT.mealNamn = el => { MEAL.namn = el.value; };
 ACT.updMall = el => { MEAL.updMall = el.checked; };
