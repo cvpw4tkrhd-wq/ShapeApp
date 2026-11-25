@@ -1,6 +1,6 @@
 'use strict';
 /* ShapeApp – kost, styrka, kondition och hälsologg. All data lagras lokalt (IndexedDB). */
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.2.0';
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -433,8 +433,11 @@ function setHeader(title, sub) { $('#title').textContent = title; $('#subtitle')
 function render() {
   $$('#nav button').forEach(b => b.classList.toggle('on', b.dataset.t === UI.tab));
   const m = $('#main');
-  const views = { idag: viewIdag, kost: viewKost, traning: viewTraning, halsa: viewHalsa, stat: viewStat };
-  m.innerHTML = (views[UI.tab] || viewIdag)();
+  if (!['idag', 'kost', 'traning', 'halsa'].includes(UI.tab)) UI.tab = 'idag';
+  document.body.dataset.sec = UI.tab;
+  const views = { idag: viewOversikt, kost: viewKostSek, traning: viewTraningSek, halsa: viewHalsa };
+  m.innerHTML = views[UI.tab]();
+  const tc = getComputedStyle(document.body).getPropertyValue('--acc').trim(); const meta = $('meta[name="theme-color"]'); if (meta && tc) meta.content = tc;
 }
 
 /* ---------- IDAG ---------- */
@@ -450,46 +453,6 @@ function reminders() {
   if (pr.veckouppfoljning && (dow === 0 || dow === 1) && !S.veckonoter[weekStart(addDays(t, dow === 1 ? -1 : 0))]) r.push({ t: 'Dags för veckouppföljning', a: 'goReview' });
   return r;
 }
-function viewIdag() {
-  const t = today(); const d = parseD(t);
-  setHeader('Idag', `${DAGAR[d.getDay()][0].toUpperCase() + DAGAR[d.getDay()].slice(1)} ${d.getDate()} ${MAN[d.getMonth()]} · vecka ${isoWeek(t)}`);
-  const n = dayNut(t), ws = weekStart(t), kt = kondTarget(t), wk = weekKond(ws), wp = weekPass(ws), pause = activePause();
-  const sleep = S.halsa.somn[t];
-  const vikt = mattLatest('vikt'), midja = mattLatest('midja'), bt = latest(S.halsa.matt.filter(m => m.typ === 'bt' && m.sys)), puls = latest(S.halsa.matt.filter(m => m.typ === 'bt' && m.puls));
-  const rem = reminders();
-  let h = '';
-  if (S.aktivtPass) h += `<div class="banner info row sb"><span>Pågående pass: <b>${esc(S.aktivtPass.namn)}</b></span><button class="btn sm pri" data-a="resumePass">Fortsätt</button></div>`;
-  if (pause) h += `<div class="banner warn">Pausläge sedan ${fmtD(pause.fran)} (${esc(pause.orsak)}). Träningsmålen är pausade – kostloggen fungerar som vanligt.</div>`;
-  h += `<div class="btns" style="margin-bottom:12px">
-    <button class="btn pri" data-a="newMeal">${ICON.plus} Måltid</button>
-    <button class="btn" data-a="quickWalk">${ICON.walk} Promenad</button>
-    <button class="btn" data-a="startPassPick">${ICON.play} Pass</button></div>`;
-  h += `<div class="card"><div class="row sb"><h3>Kost idag</h3><span class="small muted">${n.antal} ${n.antal === 1 ? 'måltid' : 'måltider'}</span></div>
-    ${goalBar('Protein', n.prot, S.mal.protein, 'g')}
-    ${goalBar('Fiber', n.fiber, S.mal.fiber, 'g')}
-    <div class="grid3" style="margin-top:8px">
-      <div class="metric"><div class="v num">${f0(n.kcal)}</div><div class="l">kcal${S.mal.kcal.max ? ' / ' + rangeTxt(S.mal.kcal) : ''}</div></div>
-      <div class="metric"><div class="v num">${f0(n.kolh)}</div><div class="l">kolhydrater g</div></div>
-      <div class="metric"><div class="v num">${f0(n.fett)}</div><div class="l">fett g / ${rangeTxt(S.mal.fett)}</div></div>
-    </div></div>`;
-  if (!pause) {
-    h += `<div class="card"><div class="row sb"><h3>Träning vecka ${isoWeek(t)}</h3><button class="btn ghost sm" data-a="tab" data-t="traning">Visa</button></div>
-      <div class="row sb"><span>Kondition</span><span class="small muted num">${f0(wk.min)} / ${kt.min === kt.max ? kt.max : kt.min + '–' + kt.max} min</span></div>${bar(wk.min, kt.max, kt.min !== kt.max ? kt.min : null)}
-      <div class="row sb"><span>Styrkepass</span><span class="small muted num">${wp.length} / ${rangeTxt(S.mal.styrkaPass)}</span></div>${bar(wp.length, S.mal.styrkaPass.max, S.mal.styrkaPass.min)}
-      <div class="note">Promenader efter måltid: ${wk.promenader} st · upptrappning vecka ${kt.vecka}</div></div>`;
-  }
-  h += `<div class="card"><div class="row sb"><h3>Sömn i natt</h3><span class="num">${sleep != null ? f1(sleep) + ' h' : '<span class="faint">Ej loggad</span>'}</span></div>
-    <div class="btns" style="margin-top:8px">${[6, 6.5, 7, 7.5, 8].map(v => `<button class="btn sm ${sleep === v ? 'pri' : ''}" data-a="setSleep" data-v="${v}">${f1(v)}</button>`).join('')}<button class="btn sm" data-a="setSleep" data-v="ask">Annat</button></div>
-    <div class="note">Snitt 7 nätter: ${sleepAvg(t) != null ? f1(sleepAvg(t)) + ' h' : 'okänt'} · mål ${rangeTxt(S.mal.somn, ' h')}</div></div>`;
-  h += `<div class="card"><div class="row sb"><h3>Senaste hälsovärden</h3><button class="btn ghost sm" data-a="tab" data-t="halsa">Hälsa</button></div>
-    <div class="kv"><span>Vikt${vikt ? ` <span class="faint xs">${vikt.datum ? fmtD(vikt.datum) : 'datum okänt'}</span>` : ''}</span><span>${vikt ? f1(vikt.v) + ' kg' : '<span class="chip out">Ej mätt</span>'}</span></div>
-    <div class="kv"><span>Midjemått</span><span>${midja ? f1(midja.v) + ' cm' : '<span class="chip out">Ej mätt</span>'}</span></div>
-    <div class="kv"><span>Blodtryck${bt ? ` <span class="faint xs">${bt.datum ? fmtD(bt.datum) : 'datum okänt'}</span>` : ''}</span><span>${bt ? `${bt.sys}/${bt.dia}` : '<span class="chip out">Ej mätt</span>'}</span></div>
-    <div class="kv"><span>Vilopuls${puls ? ` <span class="faint xs">${puls.datum ? fmtD(puls.datum) : 'datum okänt'}</span>` : ''}</span><span>${puls ? f0(puls.puls) + ' slag/min' : '<span class="chip out">Ej mätt</span>'}</span></div></div>`;
-  if (rem.length) h += `<div class="sec">Påminnelser</div><div class="list">${rem.map(r => `<button class="li" data-a="${r.a}" data-t="${r.d || ''}" data-d="${r.d || ''}"><div class="t">${esc(r.t)}</div>${ICON.right.replace('<svg', '<svg width="18" height="18"')}</button>`).join('')}</div>`;
-  h += `<p class="note" style="text-align:center">ShapeApp ställer inga diagnoser och ersätter inte vården.</p>`;
-  return h;
-}
 ACT.setSleep = el => {
   let v = el.dataset.v;
   if (v === 'ask') { const x = prompt('Timmar sömn i natt (t.ex. 6,75)'); v = pnum(x); if (v == null) return; }
@@ -497,7 +460,7 @@ ACT.setSleep = el => {
   if (S.halsa.somn[t] === v) delete S.halsa.somn[t]; else S.halsa.somn[t] = v;
   save(); render();
 };
-ACT.goReview = () => { UI.tab = 'stat'; UI.statVy = 'vecka'; render(); };
+ACT.goReview = () => { UI.tab = 'idag'; UI.ovVy = 'vecka'; render(); };
 
 /* ---------- KOST ---------- */
 function viewKost() {
@@ -864,7 +827,7 @@ function viewTraning() {
   let h = '';
   if (S.aktivtPass) h += `<div class="banner info row sb"><span>Pågående: <b>${esc(S.aktivtPass.namn)}</b></span><button class="btn sm pri" data-a="resumePass">Fortsätt</button></div>`;
   h += `<div class="week">${[0, 1, 2, 3, 4, 5, 6].map(i => { const d = addDays(ws, i); const s = S.pass.some(p => p.datum === d), k = S.kondition.some(x => x.datum === d), pz = activePause(d) && d <= t; return `<div class="d ${d === t ? 'today' : ''}">${DAG_K[i]}<div class="dots">${s ? '<i class="dot s"></i>' : ''}${k ? '<i class="dot k"></i>' : ''}${pz ? '<i class="dot p"></i>' : ''}${!s && !k && !pz ? '<i class="dot"></i>' : ''}</div></div>`; }).join('')}</div>
-  <div class="legend" style="margin:-6px 2px 12px"><span style="--c:var(--acc)">Styrka</span><span style="--c:#C98B2B">Kondition</span><span style="--c:var(--faint)">Paus</span></div>`;
+  <div class="legend" style="margin:-6px 2px 12px"><span style="--c:var(--acc)">Styrka</span><span style="--c:transparent;display:inline-flex;align-items:center"><i class="dot k" style="margin-right:5px;margin-left:-13px"></i>Kondition</span><span style="--c:var(--faint)">Paus</span></div>`;
   if (pause) h += `<div class="banner warn"><b>Pausläge</b> sedan ${fmtD(pause.fran)} – ${esc(pause.orsak)}.<br>Veckomål och viktökningsförslag är pausade. Kosten påverkas inte.<div style="margin-top:8px"><button class="btn sm" data-a="endPause">Avsluta paus</button></div></div>`;
   else {
     h += `<div class="card"><div class="row sb"><span>Styrkepass</span><span class="num small muted">${wp.length} / ${rangeTxt(S.mal.styrkaPass)}</span></div>${bar(wp.length, S.mal.styrkaPass.max, S.mal.styrkaPass.min)}
@@ -1156,7 +1119,7 @@ const MATT_TYPER = { vikt: ['Vikt', 'kg'], midja: ['Midjemått', 'cm'], bt: ['Bl
 const mattList = () => S.halsa.matt.filter(m => MATT_TYPER[m.typ]);
 function pulsLatest() { return latest(S.halsa.matt.filter(m => m.typ === 'bt' && m.puls)); }
 function viewHalsa() {
-  setHeader('Hälsa', 'Vikt, midjemått, blodtryck och puls');
+  setHeader('Hälsa', 'Kropp och sömn');
   if (!['oversikt', 'trender', 'matt'].includes(UI.halsaVy)) UI.halsaVy = 'oversikt';
   const v = UI.halsaVy;
   let h = `<div class="seg">${[['oversikt', 'Översikt'], ['trender', 'Trender'], ['matt', 'Mätningar']].map(([k, l]) => `<button class="${v === k ? 'on' : ''}" data-a="halsaVy" data-v="${k}">${l}</button>`).join('')}</div>`;
@@ -1185,6 +1148,9 @@ function halsaOversikt() {
   h += card('Midjemått', midja ? f1(midja.v) : null, 'cm', midja ? (midja.v >= 102 ? { cls: 'warn', t: '≥ 102' } : midja.v >= 94 ? { cls: 'warn', t: '≥ 94' } : { cls: 'ok', t: '< 94' }) : null, midja ? dt(midja) + diffTxt('midja', 'cm') : 'Riskgränser 94/102 cm', 'midja');
   h += card('Blodtryck', bt ? `${bt.sys}/${bt.dia}` : null, 'mmHg', bt ? (bt.sys >= 140 || bt.dia >= 90 ? { cls: 'warn', t: '≥ 140/90' } : { cls: 'ok', t: '< 140/90' }) : null, dt(bt), 'bt');
   h += card('Vilopuls', puls ? f0(puls.puls) : null, 'slag/min', null, dt(puls), 'bt');
+  const sa = sleepAvg(today()), sn = S.halsa.somn[today()];
+  h += `<button class="card" style="text-align:left;width:100%;cursor:pointer" data-a="sleepLog"><div class="row sb"><span class="small muted">Sömn i natt</span></div><div style="font-size:22px;font-weight:600;margin-top:2px" class="num">${sn != null ? f1(sn) + ' <span class="small muted">h</span>' : '<span class="faint" style="font-size:16px">Ej loggad</span>'}</div><div class="xs faint">Tryck för att logga</div></button>`;
+  h += `<button class="card" style="text-align:left;width:100%;cursor:pointer" data-a="sleepLog"><div class="row sb"><span class="small muted">Sömn 7 nätter</span>${sa != null && S.mal.somn.min != null ? `<span class="chip ${sa >= S.mal.somn.min ? 'ok' : 'warn'}">${sa >= S.mal.somn.min ? 'Inom mål' : 'Under mål'}</span>` : ''}</div><div style="font-size:22px;font-weight:600;margin-top:2px" class="num">${sa != null ? f1(sa) + ' <span class="small muted">h</span>' : '<span class="faint" style="font-size:16px">–</span>'}</div><div class="xs faint">Mål ${rangeTxt(S.mal.somn, ' h')}</div></button>`;
   h += '</div>';
   h += `<details class="card"><summary>Så mäter du</summary><div class="small" style="margin-top:8px">
     <p><b>Vikt:</b> på morgonen efter toalettbesök, före frukost, i samma kläder. Dagsvariationer på 1–2 kg är normala – titta på trenden.</p>
@@ -1204,12 +1170,15 @@ function halsaTrender() {
   return `<div class="card"><h3>Vikt (kg)</h3>${lineChart([{ pts: vk, color: 'var(--acc)', label: 'Vikt' }], { aria: 'Vikt över tid' })}${few(vk, 'Värden utan datum visas inte.')}</div>
     <div class="card"><h3>Midjemått (cm)</h3>${lineChart([{ pts: mj, color: 'var(--acc)', label: 'Midja' }], { lines: [{ y: 94, label: '94' }, { y: 102, label: '102', color: 'var(--bad)' }], aria: 'Midjemått över tid' })}${few(mj)}</div>
     <div class="card"><h3>Blodtryck (mmHg)</h3>${lineChart([{ pts: bt.map(b => ({ x: b.datum, y: b.sys })), color: 'var(--acc)', label: 'Systoliskt' }, { pts: bt.map(b => ({ x: b.datum, y: b.dia })), color: 'var(--c-b)', label: 'Diastoliskt' }], { aria: 'Blodtryck över tid' })}${few(bt, 'Värden utan datum visas inte.')}</div>
-    <div class="card"><h3>Vilopuls (slag/min)</h3>${lineChart([{ pts: pu, color: 'var(--acc)', label: 'Puls' }], { aria: 'Vilopuls över tid' })}${few(pu)}</div>`;
+    <div class="card"><h3>Vilopuls (slag/min)</h3>${lineChart([{ pts: pu, color: 'var(--acc)', label: 'Puls' }], { aria: 'Vilopuls över tid' })}${few(pu)}</div>
+    <div class="card"><h3>Sömn senaste 60 nätterna (h)</h3>${(() => { const pts = Object.entries(S.halsa.somn).filter(([d]) => daysBetween(d, today()) <= 60).map(([x, y]) => ({ x, y })); return lineChart([{ pts, color: 'var(--acc)', label: 'Sömn' }], { lines: S.mal.somn.min != null ? [{ y: S.mal.somn.min, label: 'mål', color: 'var(--ok)' }] : [], aria: 'Sömn över tid' }) + few(pts); })()}</div>`;
 }
 function halsaMatt() {
   const list = [...mattList()].sort((a, b) => (b.datum || '') < (a.datum || '') ? -1 : 1);
   const val = m => m.typ === 'bt' ? `${m.sys ? `${m.sys}/${m.dia}` : ''}${m.puls ? ` <span class="xs muted">puls ${m.puls}</span>` : ''}` : f1(m.v) + ' <span class="xs muted">' + MATT_TYPER[m.typ][1] + '</span>';
-  return list.length ? `<div class="list">${list.map(m => `<button class="li" data-a="editMatt" data-id="${m.id}"><div class="t"><div>${MATT_TYPER[m.typ][0]}</div><div class="xs muted">${m.datum ? fmtD(m.datum) : 'Datum okänt'}${m.forh ? ' · ' + esc(m.forh) : ''}${m.not ? ' · ' + esc(m.not) : ''}</div></div><div class="num b">${val(m)}</div></button>`).join('')}</div>` : '<div class="empty">Inga mätningar ännu.</div>';
+  const nights = Object.entries(S.halsa.somn).sort((a, b) => a[0] < b[0] ? 1 : -1).slice(0, 21);
+  const sleepHtml = `<div class="sec">Sömn <button class="btn ghost sm" data-a="sleepLog">${ICON.plus} Logga</button></div>${nights.length ? `<div class="list">${nights.map(([d, v]) => `<button class="li" data-a="sleepLog" data-d="${d}"><div class="t"><div>${fmtDay(d)}</div></div><div class="num b">${f1(v)} <span class="xs muted">h</span></div></button>`).join('')}</div>` : '<div class="empty">Ingen sömn loggad.</div>'}`;
+  return `<div class="sec">Kroppsmått</div>` + (list.length ? `<div class="list">${list.map(m => `<button class="li" data-a="editMatt" data-id="${m.id}"><div class="t"><div>${MATT_TYPER[m.typ][0]}</div><div class="xs muted">${m.datum ? fmtD(m.datum) : 'Datum okänt'}${m.forh ? ' · ' + esc(m.forh) : ''}${m.not ? ' · ' + esc(m.not) : ''}</div></div><div class="num b">${val(m)}</div></button>`).join('')}</div>` : '<div class="empty">Inga mätningar ännu.</div>') + sleepHtml;
 }
 let MT = null;
 ACT.addMatt = el => { const typ = MATT_TYPER[el?.dataset?.d] ? el.dataset.d : 'vikt'; MT = { id: null, typ, datum: today(), v: null, sys: null, dia: null, puls: null, forh: typ === 'bt' ? 'Sittande vila 5 min' : typ === 'vikt' ? 'Morgon, före frukost' : '', not: '' }; mattForm(); };
@@ -1249,18 +1218,6 @@ function weekNutAvg(ws) {
 }
 function weekPaused(ws) { for (let i = 0; i < 7; i++) if (activePause(addDays(ws, i))) return true; return false; }
 function e1rm(s) { return s.kg && s.reps ? s.kg * (1 + s.reps / 30) : null; }
-function viewStat() {
-  setHeader('Statistik', 'Trender och veckouppföljning');
-  const v = UI.statVy;
-  let h = `<div class="seg">${[['kost', 'Kost'], ['traning', 'Träning'], ['vecka', 'Veckouppföljning']].map(([k, l]) => `<button class="${v === k ? 'on' : ''}" data-a="statVy" data-v="${k}">${l}</button>`).join('')}</div>`;
-  if (v !== 'vecka') h += `<div class="seg">${[[4, '4 v'], [12, '12 v'], [26, '6 mån']].map(([k, l]) => `<button class="${UI.statPeriod === k ? 'on' : ''}" data-a="statPer" data-v="${k}">${l}</button>`).join('')}</div>`;
-  if (v === 'kost') h += statKost();
-  if (v === 'traning') h += statTraning();
-  if (v === 'vecka') h += statVecka();
-  return h;
-}
-ACT.statVy = el => { UI.statVy = el.dataset.v; render(); };
-ACT.statPer = el => { UI.statPeriod = +el.dataset.v; render(); };
 function statKost() {
   const ws = weeksBack(UI.statPeriod); const avg = ws.map(w => ({ w, n: weekNutAvg(w) }));
   const lbl = w => 'v' + isoWeek(w);
@@ -1504,6 +1461,138 @@ ACT.aiSave = async () => {
 };
 ACT.aiRemove = () => confirmBox('Ta bort API-nyckeln från den här enheten?', 'Ta bort', async () => { aiCfg().key = ''; await saveLocal(); toast('Nyckeln borttagen'); });
 
+/* ---------- ÖVERSIKT: hälsan i helhet ---------- */
+const SEKTION = { kost: ['Kost', 'var(--sec-kost)'], traning: ['Träning', 'var(--sec-tr)'], halsa: ['Hälsa', 'var(--sec-ha)'] };
+const secDot = k => `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${SEKTION[k][1]};margin-right:6px"></span>`;
+function periodSeg() { return `<div class="seg">${[[4, '4 v'], [12, '12 v'], [26, '6 mån']].map(([k, l]) => `<button class="${UI.statPeriod === k ? 'on' : ''}" data-a="statPer" data-v="${k}">${l}</button>`).join('')}</div>`; }
+
+// Måluppfyllelse per vecka och område: ok | part | miss | none | paus
+function weekStatus(ws) {
+  const cur = ws === weekStart(today());
+  const n = weekNutAvg(ws), paus = weekPaused(ws), we = addDays(ws, 6);
+  const lvl = (v, min, partK) => v == null || min == null ? 'none' : v >= min ? 'ok' : v >= min * partK ? 'part' : (cur ? 'part' : 'miss');
+  const nights = [0, 1, 2, 3, 4, 5, 6].filter(i => S.halsa.somn[addDays(ws, i)] != null).length;
+  const sl = nights >= 3 ? sleepAvg(we, 7) : null;
+  const kt = kondTarget(ws);
+  return {
+    protein: n ? lvl(n.prot, S.mal.protein.min, .85) : 'none',
+    fiber: n ? lvl(n.fiber, S.mal.fiber.min, .8) : 'none',
+    styrka: paus ? 'paus' : lvl(weekPass(ws).length, S.mal.styrkaPass.min, .6),
+    kondition: paus ? 'paus' : lvl(weekKond(ws).min, kt.min, .6),
+    somn: sl == null ? 'none' : lvl(sl, S.mal.somn.min, .93),
+    cur
+  };
+}
+const ST_STYLE = { ok: ['var(--okbg)', 'var(--ok)', '✓'], part: ['var(--warnbg)', 'var(--warn)', '½'], miss: ['var(--badbg)', 'var(--bad)', '–'], none: ['var(--soft2)', 'var(--faint)', '·'], paus: ['var(--soft)', 'var(--muted)', 'P'] };
+function goalGrid(weeks) {
+  const rows = [['protein', 'Protein', 'kost'], ['fiber', 'Fiber', 'kost'], ['styrka', 'Styrkepass', 'traning'], ['kondition', 'Kondition', 'traning'], ['somn', 'Sömn', 'halsa']];
+  const st = weeks.map(w => ({ w, s: weekStatus(w) }));
+  return `<div style="overflow-x:auto"><table class="tbl" style="table-layout:fixed;min-width:${90 + weeks.length * 26}px">
+    <tr><th style="width:90px"></th>${st.map(x => `<th style="text-align:center;font-size:10px;padding:4px 0">${isoWeek(x.w)}</th>`).join('')}</tr>
+    ${rows.map(([k, l, sec]) => `<tr><td style="font-size:12px">${secDot(sec)}${l}</td>${st.map(x => { const [bg, fg, t] = ST_STYLE[x.s[k]]; return `<td style="text-align:center;padding:3px 1px"><span title="v${isoWeek(x.w)}: ${l}" style="display:block;border-radius:6px;padding:3px 0;font-size:11px;font-weight:600;background:${bg};color:${fg};${x.s.cur ? 'outline:1px dashed var(--line);' : ''}">${t}</span></td>`; }).join('')}</tr>`).join('')}
+  </table></div>
+  <div class="legend" style="margin-top:6px"><span style="--c:var(--ok)">Mål nått</span><span style="--c:var(--warn)">Nära/pågår</span><span style="--c:var(--bad)">Under</span><span style="--c:var(--faint)">Ingen data</span><span style="--c:var(--muted)">P = paus</span></div>`;
+}
+function viewOversikt() {
+  const t = today(), d = parseD(t);
+  setHeader('Översikt', `${DAGAR[d.getDay()][0].toUpperCase() + DAGAR[d.getDay()].slice(1)} ${d.getDate()} ${MAN[d.getMonth()]} · vecka ${isoWeek(t)}`);
+  if (!['nu', 'vecka', 'trend'].includes(UI.ovVy)) UI.ovVy = 'nu';
+  let h = `<div class="seg">${[['nu', 'Nu'], ['vecka', 'Veckouppföljning'], ['trend', 'Helhet']].map(([k, l]) => `<button class="${UI.ovVy === k ? 'on' : ''}" data-a="ovVy" data-v="${k}">${l}</button>`).join('')}</div>`;
+  if (UI.ovVy === 'vecka') return h + statVecka();
+  if (UI.ovVy === 'trend') return h + ovTrend();
+  return h + ovNu();
+}
+ACT.ovVy = el => { UI.ovVy = el.dataset.v; render(); };
+ACT.statPer = el => { UI.statPeriod = +el.dataset.v; render(); };
+function card(sec, title, body, tab) {
+  return `<div class="card" style="border-left:4px solid ${SEKTION[sec][1]};--acc:${SEKTION[sec][1]}"><div class="row sb"><h3>${title}</h3>${tab ? `<button class="btn ghost sm" data-a="tab" data-t="${tab}" style="color:${SEKTION[sec][1]}">Visa ${ICON.right.replace('<svg', '<svg width="16" height="16"')}</button>` : ''}</div>${body}</div>`;
+}
+function ovNu() {
+  const t = today(), ws = weekStart(t), n = dayNut(t), wn = weekNutAvg(ws), pause = activePause();
+  const kt = kondTarget(t), wk = weekKond(ws), wp = weekPass(ws), sleep = S.halsa.somn[t], sa = sleepAvg(t);
+  const daysLogged = [0, 1, 2, 3, 4, 5, 6].map(i => addDays(ws, i)).filter(x => x <= t && S.maltider.some(m => m.datum === x)).length;
+  const daysSoFar = daysBetween(ws, t) + 1;
+  const vikt = mattLatest('vikt'), midja = mattLatest('midja'), bt = latest(S.halsa.matt.filter(m => m.typ === 'bt' && m.sys)), puls = latest(S.halsa.matt.filter(m => m.typ === 'bt' && m.puls));
+  const v30 = (() => { const v = S.halsa.matt.filter(m => m.typ === 'vikt' && m.datum).sort((a, b) => a.datum < b.datum ? -1 : 1); if (v.length < 2) return null; const last = v[v.length - 1]; const ref = [...v].reverse().find(x => daysBetween(x.datum, last.datum) >= 25) || v[0]; return ref === last ? null : { ch: last.v - ref.v, from: ref.datum }; })();
+  const st = weekStatus(ws);
+  const chip = s => `<span class="chip" style="background:${ST_STYLE[s][0]};color:${ST_STYLE[s][1]}">${{ ok: 'Mål nått', part: 'På väg', miss: 'Under mål', none: 'Ingen data', paus: 'Paus' }[s]}</span>`;
+  let h = '';
+  if (S.aktivtPass) h += `<div class="banner info row sb"><span>Pågående pass: <b>${esc(S.aktivtPass.namn)}</b></span><button class="btn sm pri" data-a="resumePass">Fortsätt</button></div>`;
+  h += `<div class="grid2" style="margin-bottom:12px">
+    <button class="btn" data-a="newMeal" style="border-color:var(--sec-kost);color:var(--sec-kost)">${ICON.plus} Måltid</button>
+    <button class="btn" data-a="photoMeal" style="border-color:var(--sec-kost);color:var(--sec-kost)">📷 Fota måltid</button>
+    <button class="btn" data-a="startPassPick" style="border-color:var(--sec-tr);color:var(--sec-tr)">${ICON.play} Pass</button>
+    <button class="btn" data-a="quickWalk" style="border-color:var(--sec-tr);color:var(--sec-tr)">${ICON.walk} Promenad</button></div>`;
+  // Kost
+  h += card('kost', 'Kost', `
+    <div class="small muted" style="margin-bottom:4px">Idag</div>
+    ${goalBar('Protein', n.prot, S.mal.protein, 'g')}${goalBar('Fiber', n.fiber, S.mal.fiber, 'g')}
+    <div class="small muted num" style="margin-top:4px">${f0(n.kcal)} kcal · ${f0(n.kolh)} g kolh · ${f0(n.fett)} g fett · ${n.antal} ${n.antal === 1 ? 'måltid' : 'måltider'}</div>
+    <div class="kv" style="margin-top:8px"><span>Veckan: protein snitt</span><span class="num">${wn ? f0(wn.prot) + ' g' : '–'} ${chip(st.protein)}</span></div>
+    <div class="kv"><span>Veckan: fiber snitt</span><span class="num">${wn ? f0(wn.fiber) + ' g' : '–'} ${chip(st.fiber)}</span></div>
+    <div class="note">Loggat ${daysLogged} av ${daysSoFar} dagar denna vecka.</div>`, 'kost');
+  // Träning
+  h += card('traning', 'Träning', pause ? `<div class="banner warn" style="margin:4px 0 0">Pausläge sedan ${fmtD(pause.fran)} (${esc(pause.orsak)}). Träningsmålen är pausade – kosten fortsätter som vanligt.</div>`
+    : `<div class="row sb"><span>Styrkepass</span><span class="small muted num">${wp.length} / ${rangeTxt(S.mal.styrkaPass)} ${chip(st.styrka)}</span></div>${bar(wp.length, S.mal.styrkaPass.max, S.mal.styrkaPass.min)}
+    <div class="row sb" style="margin-top:6px"><span>Kondition</span><span class="small muted num">${f0(wk.min)} / ${kt.min === kt.max ? kt.max : kt.min + '–' + kt.max} min ${chip(st.kondition)}</span></div>${bar(wk.min, kt.max, kt.min !== kt.max ? kt.min : null)}
+    <div class="note">Promenader efter måltid: ${wk.promenader} st · upptrappning vecka ${kt.vecka}${afterPause(t) ? ' · första passet efter paus – ta det lugnt' : ''}</div>`, 'traning');
+  // Sömn och kropp
+  h += card('halsa', 'Sömn och kropp', `
+    <div class="row sb"><span>Sömn i natt</span><span class="num">${sleep != null ? f1(sleep) + ' h' : '<span class="faint">Ej loggad</span>'}</span></div>
+    <div class="btns" style="margin:6px 0">${[6, 6.5, 7, 7.5, 8].map(v => `<button class="btn sm ${sleep === v ? 'pri' : ''}" data-a="setSleep" data-v="${v}">${f1(v)}</button>`).join('')}<button class="btn sm" data-a="setSleep" data-v="ask">Annat</button></div>
+    <div class="kv"><span>Sömn snitt 7 nätter</span><span class="num">${sa != null ? f1(sa) + ' h' : '–'} ${chip(sa == null || S.mal.somn.min == null ? 'none' : sa >= S.mal.somn.min ? 'ok' : sa >= S.mal.somn.min - .5 ? 'part' : 'miss')}</span></div>
+    <div class="kv"><span>Vikt</span><span class="num">${vikt ? f1(vikt.v) + ' kg' : '<span class="chip out">Ej mätt</span>'}${v30 ? ` <span class="xs muted">${v30.ch > 0 ? '+' : ''}${f1(v30.ch)} sedan ${fmtD(v30.from)}</span>` : ''}</span></div>
+    <div class="kv"><span>Midjemått</span><span class="num">${midja ? f1(midja.v) + ' cm' : '<span class="chip out">Ej mätt</span>'}</span></div>
+    <div class="kv"><span>Blodtryck / vilopuls</span><span class="num">${bt ? `${bt.sys}/${bt.dia}` : '–'} · ${puls ? f0(puls.puls) : '–'}</span></div>`, 'halsa');
+  const rem = reminders();
+  if (rem.length) h += `<div class="sec">Påminnelser</div><div class="list">${rem.map(r => `<button class="li" data-a="${r.a}" data-t="${r.d || ''}" data-d="${r.d || ''}"><div class="t">${esc(r.t)}</div>${ICON.right.replace('<svg', '<svg width="18" height="18"')}</button>`).join('')}</div>`;
+  h += `<div class="sec">Senaste veckorna</div><div class="card">${goalGrid(weeksBack(6))}</div>`;
+  h += `<p class="note" style="text-align:center">ShapeApp ställer inga diagnoser och ersätter inte vården.</p>`;
+  return h;
+}
+function ovTrend() {
+  const ws = weeksBack(UI.statPeriod), lbl = w => 'v' + isoWeek(w);
+  const avg = ws.map(w => ({ w, n: weekNutAvg(w) }));
+  const sl = ws.map(w => { const nights = [0, 1, 2, 3, 4, 5, 6].filter(i => S.halsa.somn[addDays(w, i)] != null).length; return { label: lbl(w), v: nights ? sleepAvg(addDays(w, 6), 7) : null }; });
+  const vk = S.halsa.matt.filter(m => m.typ === 'vikt' && m.datum && m.datum >= ws[0]).map(m => ({ x: m.datum, y: m.v }));
+  const st = ws.map(w => weekStatus(w)); const keys = ['protein', 'fiber', 'styrka', 'kondition', 'somn'];
+  const pct = st.map(s => { const k = keys.filter(x => !['none', 'paus'].includes(s[x])); return k.length ? k.filter(x => s[x] === 'ok').length / k.length * 100 : null; });
+  return periodSeg() + `<div class="card"><h3>Måluppfyllelse per vecka</h3>${goalGrid(ws)}</div>
+    <div class="card"><h3>Andel mål nådda (%)</h3>${barChart(ws.map((w, i) => ({ label: lbl(w), v: pct[i], mark: weekPaused(w) ? 'Paus' : null })), { color: 'var(--acc)' })}<div class="note">Andel av protein, fiber, styrka, kondition och sömn där veckans mål nåddes. Områden utan data eller i paus räknas inte.</div></div>
+    <div class="card"><h3>${secDot('kost')}Protein och fiber (snitt/dag)</h3>${barChart(avg.map(a => ({ label: lbl(a.w), v: a.n ? a.n.prot : null })), { goal: S.mal.protein.min, goalLabel: 'protein', color: 'var(--sec-kost)' })}${barChart(avg.map(a => ({ label: lbl(a.w), v: a.n ? a.n.fiber : null })), { goal: S.mal.fiber.min, goalLabel: 'fiber', color: 'var(--sec-kost)', h: 110 })}</div>
+    <div class="card"><h3>${secDot('traning')}Kondition (min/vecka)</h3>${barChart(ws.map(w => ({ label: lbl(w), v: weekKond(w).min, mark: weekPaused(w) ? 'Paus' : null })), { goal: kondTarget().max, color: 'var(--sec-tr)' })}</div>
+    <div class="card"><h3>${secDot('halsa')}Sömn (snitt h/natt)</h3>${barChart(sl, { goal: S.mal.somn.min, color: 'var(--sec-ha)' })}</div>
+    <div class="card"><h3>${secDot('halsa')}Vikt (kg)</h3>${lineChart([{ pts: vk, color: 'var(--sec-ha)', label: 'Vikt' }], { aria: 'Vikt över tid' })}</div>`;
+}
+
+/* ---------- Kost och Träning med egna trender ---------- */
+function viewKostSek() {
+  if (!['dag', 'trender'].includes(UI.kostVy)) UI.kostVy = 'dag';
+  const seg = `<div class="seg">${[['dag', 'Dagbok'], ['trender', 'Trender']].map(([k, l]) => `<button class="${UI.kostVy === k ? 'on' : ''}" data-a="secVy" data-s="kostVy" data-v="${k}">${l}</button>`).join('')}</div>`;
+  if (UI.kostVy === 'trender') { setHeader('Kost', 'Trender'); return seg + periodSeg() + statKost(); }
+  const body = viewKost(); return seg + body;
+}
+function viewTraningSek() {
+  if (!['vecka', 'trender'].includes(UI.traningVy)) UI.traningVy = 'vecka';
+  const seg = `<div class="seg">${[['vecka', 'Veckan'], ['trender', 'Trender']].map(([k, l]) => `<button class="${UI.traningVy === k ? 'on' : ''}" data-a="secVy" data-s="traningVy" data-v="${k}">${l}</button>`).join('')}</div>`;
+  if (UI.traningVy === 'trender') { setHeader('Träning', 'Trender'); return seg + periodSeg() + statTraning(); }
+  const body = viewTraning(); return seg + body;
+}
+ACT.secVy = el => { UI[el.dataset.s] = el.dataset.v; render(); window.scrollTo(0, 0); };
+
+/* ---------- sömnlogg ---------- */
+ACT.sleepLog = el => {
+  const d = el?.dataset?.d || today();
+  openSheet(`${sheetHead('Logga sömn')}<div class="sbody">
+    <label class="f">Natten till</label><input type="date" id="slD" value="${d}" max="${today()}">
+    <label class="f">Timmar</label><input type="text" inputmode="decimal" id="slH" value="${S.halsa.somn[d] != null ? String(S.halsa.somn[d]).replace('.', ',') : ''}" placeholder="7,5">
+    <div class="btns" style="margin-top:8px">${[6, 6.5, 7, 7.5, 8, 8.5].map(v => `<button class="btn sm" data-a="slQuick" data-v="${v}">${f1(v)}</button>`).join('')}</div></div>
+    <div class="sf"><div class="btns">${S.halsa.somn[d] != null ? '<button class="btn danger" data-a="slDel">Ta bort</button>' : ''}<button class="btn pri" data-a="slSave">Spara</button></div></div>`);
+};
+ACT.slQuick = el => { $('#slH').value = el.dataset.v.replace('.', ','); };
+ACT.slSave = () => { const d = $('#slD').value || today(), h = pnum($('#slH').value); if (h == null || h < 0 || h > 16) { toast('Ange timmar (0–16)'); return; } S.halsa.somn[d] = h; save(); closeSheet(); render(); toast('Sparat'); };
+ACT.slDel = () => { delete S.halsa.somn[$('#slD').value]; save(); closeSheet(); render(); };
+
 /* ---------- INSTÄLLNINGAR ---------- */
 ACT.openSettings = () => {
   const s = LOCAL.sync || {};
@@ -1515,6 +1604,7 @@ ACT.openSettings = () => {
       <button class="li" data-a="manageOvn"><div class="t"><div>Övningsbibliotek</div></div></button>
       <button class="li" data-a="manageMallarPass"><div class="t"><div>Passmallar</div></div></button>
       <button class="li" data-a="setAi"><div class="t"><div>AI-fotoanalys</div><div class="small muted">${LOCAL.ai?.key ? 'Aktiv · ' + esc(LOCAL.ai.model) : 'Ingen API-nyckel ännu'}</div></div>${LOCAL.ai?.key ? '<span class="chip ok">På</span>' : ''}</button>
+      <div class="li" style="cursor:default"><div class="t"><div>Startsida</div><div class="small muted">Fliken som öppnas när appen startar</div></div><select data-c="startTab" style="width:auto;min-height:36px">${[['idag', 'Översikt'], ['kost', 'Kost'], ['traning', 'Träning'], ['halsa', 'Hälsa']].map(([k, l]) => `<option value="${k}" ${(LOCAL.startTab || 'idag') === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
       <button class="li" data-a="setPamin"><div class="t"><div>Påminnelser</div><div class="small muted">I appen och som kalenderhändelser</div></div></button>
     </div>
     <div class="sec">Data</div>
@@ -1542,6 +1632,7 @@ ACT.setProfil = () => {
     <label class="f">Övrigt (läkemedel, ärftlighet, vardagsaktivitet …)</label><textarea id="pO">${esc(p.notering || '')}</textarea></div>
     <div class="sf"><button class="btn pri block" data-a="saveProfil">Spara</button></div>`, { onClose: backToSettings });
 };
+ACT.startTab = async el => { LOCAL.startTab = el.value; await saveLocal(); toast('Startsidan sparad'); };
 ACT.saveProfil = () => { Object.assign(S.profil, { namn: $('#pN').value.trim(), kon: $('#pK').value, alder: pnum($('#pA').value), langd: pnum($('#pL').value), vikt: pnum($('#pV').value), notering: $('#pO').value }); save(); closeSheet(); render(); toast('Sparat'); };
 ACT.setMal = () => {
   const m = S.mal; const rr = (k, l, u) => `<label class="f">${l}${u ? ' (' + u + ')' : ''}</label><div class="inrow"><input type="number" inputmode="decimal" data-mal="${k}.min" value="${m[k].min ?? ''}" placeholder="min"><input type="number" inputmode="decimal" data-mal="${k}.max" value="${m[k].max ?? ''}" placeholder="max"></div>`;
@@ -1750,6 +1841,7 @@ async function init() {
   LOCAL = (await Store.get('local')) || { sync: null, lastSha: null, lastSync: null };
   if (!S) { S = defaultState(); await Store.set('state', S); } else S = migrate(S);
   await loadFoods();
+  UI.tab = LOCAL.startTab || 'idag';
   render();
   if (S.aktivtPass) toast('Du har ett pågående pass');
   if (navigator.storage?.persist) navigator.storage.persist().catch(() => { });

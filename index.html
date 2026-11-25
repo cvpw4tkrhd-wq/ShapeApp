@@ -21,6 +21,7 @@
   --ok:#2E6A3E;--okbg:#E2EFDF;--warn:#8A5A0B;--warnbg:#FAEFD7;--bad:#9A2B2B;--badbg:#F8E3E1;
   --info:#285B7A;--infobg:#E2EEF5;
   --c-a:#244B36;--c-b:#7FAE84;--c-n:#9AA39B;--c-m:#D3DCCD;
+  --sec-kost:#2E6A3E;--sec-tr:#A0542A;--sec-ha:#2F6386;
   --r:14px;--rs:10px;--shadow:0 1px 2px rgba(23,38,28,.06);
   --safe-b:env(safe-area-inset-bottom,0px);--safe-t:env(safe-area-inset-top,0px);
   --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,Helvetica,Arial,sans-serif;
@@ -31,7 +32,18 @@
   --ok:#9FD3A6;--okbg:#1F3324;--warn:#F0C674;--warnbg:#3A2F17;--bad:#F2A3A0;--badbg:#3A1F1E;
   --info:#9CC9E6;--infobg:#1B2C38;--shadow:none;
   --c-a:#B6CCAA;--c-b:#5F8F68;--c-n:#6B756D;--c-m:#3A463D;
+  --sec-kost:#9FD3A6;--sec-tr:#E7A77B;--sec-ha:#9CC4E0;
 }}
+body[data-sec="kost"]{--acc:var(--sec-kost)}
+body[data-sec="traning"]{--acc:#A0542A;--soft:#F5E8DD;--soft2:#FAF3EC;--sage:#E3B999}
+body[data-sec="halsa"]{--acc:#2F6386;--soft:#E2ECF3;--soft2:#EFF5F9;--sage:#A9C6DA}
+@media (prefers-color-scheme:dark){
+ body[data-sec="traning"]{--acc:#E7A77B;--acc-ink:#2A160A;--soft:#3A2A20;--soft2:#261C16;--sage:#7A5238}
+ body[data-sec="halsa"]{--acc:#9CC4E0;--acc-ink:#0F2431;--soft:#1F2F3A;--soft2:#18242C;--sage:#3D5A6E}
+}
+header.top h1::before{content:"";display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--acc);margin-right:8px;vertical-align:middle;position:relative;top:-2px}
+body[data-sec="idag"] header.top h1::before{display:none}
+nav.nav button[data-t="kost"].on{color:var(--sec-kost)}nav.nav button[data-t="traning"].on{color:var(--sec-tr)}nav.nav button[data-t="halsa"].on{color:var(--sec-ha)}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--font);font-size:16px;line-height:1.45}
 body{padding-bottom:calc(74px + var(--safe-b));min-height:100vh}
@@ -137,7 +149,7 @@ input[type=checkbox]{accent-color:var(--acc)}
 .week .d.today{border-color:var(--acc);color:var(--ink)}
 .week .d .dots{display:flex;justify-content:center;gap:3px;height:16px;align-items:center;margin-top:2px}
 .dot{width:7px;height:7px;border-radius:50%;background:var(--line)}
-.dot.s{background:var(--acc)}.dot.k{background:#C98B2B}.dot.p{background:var(--faint)}
+.dot.s{background:var(--acc)}.dot.k{background:transparent;border:2px solid var(--acc);box-sizing:border-box}.dot.p{background:var(--faint)}
 .set{display:grid;grid-template-columns:26px 1fr 1fr 44px;gap:8px;align-items:center;padding:6px 0;border-top:1px solid var(--line)}
 .set.hd{border-top:0;font-size:12px;color:var(--muted);padding-bottom:0}
 .set input{text-align:center;min-height:40px;padding:6px}
@@ -187,11 +199,10 @@ details.card[open] summary::after{transform:rotate(-90deg)}
 </header>
 <main id="main"><div class="loading">Laddar …</div></main>
 <nav class="nav" id="nav">
-  <button data-a="tab" data-t="idag"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/></svg>Idag</button>
+  <button data-a="tab" data-t="idag"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/></svg>Översikt</button>
   <button data-a="tab" data-t="kost"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h18a9 9 0 0 1-18 0z"/><path d="M8 8c0-2 2-2 2-4M13 8c0-2 2-2 2-4"/></svg>Kost</button>
   <button data-a="tab" data-t="traning"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 6.5v11M17.5 6.5v11M3.5 9v6M20.5 9v6M6.5 12h11"/></svg>Träning</button>
   <button data-a="tab" data-t="halsa"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20.8 8.6a5 5 0 0 0-8.8-3.2A5 5 0 0 0 3.2 8.6c0 5.4 8.8 11 8.8 11s3.1-2 5.6-4.8"/><path d="M14 13h2l1.5-3 2 5 1.5-2H23"/></svg>Hälsa</button>
-  <button data-a="tab" data-t="stat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>Statistik</button>
 </nav>
 <div id="sheet" class="sheet-wrap hidden"></div>
 <div id="timer" class="timer hidden"></div>
