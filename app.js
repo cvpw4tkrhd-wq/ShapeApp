@@ -1,6 +1,6 @@
 'use strict';
 /* ShapeApp – kost, styrka, kondition och hälsologg. All data lagras lokalt (IndexedDB). */
-const APP_VERSION = '1.0.3';
+const APP_VERSION = '1.1.0';
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -518,7 +518,7 @@ function viewKost() {
     ${goalBar('Protein', n.prot, S.mal.protein, 'g')}${goalBar('Fiber', n.fiber, S.mal.fiber, 'g')}
     ${S.mal.kcal.max ? goalBar('Energi', n.kcal, S.mal.kcal, 'kcal') : ''}${S.mal.kolh.max ? goalBar('Kolhydrater', n.kolh, S.mal.kolh, 'g') : ''}
     ${goalBar('Fett', n.fett, S.mal.fett, 'g')}</div>`;
-  h += `<button class="btn pri block" data-a="newMeal" style="margin-bottom:12px">${ICON.plus} Lägg till måltid</button>`;
+  h += `<div class="btns" style="margin-bottom:12px"><button class="btn pri" data-a="newMeal">${ICON.plus} Lägg till måltid</button><button class="btn" data-a="photoMeal">📷 Fota</button></div>`;
   if (!meals.length) h += `<div class="empty">Inga måltider loggade ${dag === today() ? 'idag' : 'denna dag'}.<br>Välj en sparad måltid eller sök bland livsmedel.</div>`;
   else h += `<div class="list">${meals.map(m => { const mn = mealNut(m); const p = mealProfile(mn); return `<button class="li" data-a="editMeal" data-id="${m.id}">
       <div class="t"><div><b>${esc(m.typ)}</b> <span class="faint small">${esc(m.tid || '')}</span>${m.namn ? ` · ${esc(m.namn)}` : ''}${portionFactor(m) < 1 ? ` <span class="chip out">${f0(portionFactor(m) * 100)} % av sats</span>` : ''}</div>
@@ -590,6 +590,7 @@ function renderMealBody() {
   b.innerHTML = `<div class="seg" style="margin-bottom:8px">${MALTYPER.map(t => `<button class="${t === MEAL.typ ? 'on' : ''}" data-a="mealType" data-v="${t}" style="font-size:12px;padding:7px 2px">${t}</button>`).join('')}</div>
     <div class="inrow"><div><input type="date" value="${MEAL.datum}" max="${today()}" data-c="mealField" data-k="datum" aria-label="Datum"></div>
     <div><input type="time" value="${MEAL.tid}" data-c="mealField" data-k="tid" aria-label="Tid"></div></div>
+    <button class="btn block" data-a="aiPhoto" style="margin-top:10px">📷 Fota måltid – AI föreslår innehåll</button>
     <div id="mealSum" style="margin-top:12px">${mealSumHtml()}</div>
     <div id="mealRows">${mealRowsHtml()}</div>
     <div class="seg">${[['snabb', 'Sparade'], ['ofta', 'Ofta'], ['sok', 'Sök']].map(([k, l]) => `<button class="${MEALSRC.mode === k || (MEALSRC.mode === 'rader' && k === 'snabb') ? 'on' : ''}" data-a="mealMode" data-m="${k}">${l}</button>`).join('')}</div>
@@ -1333,6 +1334,176 @@ function statVecka() {
 }
 ACT.saveVecka = el => { S.veckonoter[el.dataset.w] = { text: $('#vnT').value, fokus: $('#vnF').value, klar: today() }; save(); render(); toast('Veckan uppföljd'); };
 
+/* ---------- AI-fotoanalys av måltid (Claude API, egen nyckel på enheten) ---------- */
+const AI_MODELS = [['claude-sonnet-5-5', 'Sonnet – balans mellan precision och pris (rekommenderas)'], ['claude-haiku-5-5', 'Haiku – snabbast och billigast'], ['claude-opus-5-5', 'Opus – mest noggrann, dyrast']];
+const aiCfg = () => LOCAL.ai || (LOCAL.ai = { key: '', model: 'claude-sonnet-5-5', max: 60, usage: { month: '', n: 0 } });
+const monthKey = () => today().slice(0, 7);
+function aiUsage() { const c = aiCfg(); if (c.usage.month !== monthKey()) c.usage = { month: monthKey(), n: 0 }; return c.usage; }
+const AI_SYSTEM = `Du är en noggrann nutritionsassistent. Du får ett foto av en måltid.
+Identifiera varje synlig livsmedelskomponent och uppskatta dess vikt i gram så som den ligger på tallriken (ätbar del, tillagad om den är tillagad).
+Räkna även med troliga dolda komponenter, t.ex. stekfett, olja, smör eller sås, som egna rader med säkerhet "låg".
+För varje komponent: ange ett kort svenskt sökord som matchar namn i Livsmedelsverkets livsmedelsdatabas, t.ex. "lax stekt", "potatis kokt", "ris fullkorn kokt", "broccoli kokt", "olivolja", "kycklingfilé stekt".
+Om användaren skriver en kommentar (t.ex. vikt eller ingredienser) ska den gå före din bedömning.
+Svara ENBART med giltig JSON, utan annan text, enligt:
+{"ratt":"kort namn på rätten","ingredienser":[{"namn":"visningsnamn","sok":"sökord","gram":120,"sakerhet":"hög|medel|låg"}],"kommentar":"kort notering om osäkerheter, max 2 meningar"}
+Om bilden inte visar mat: {"ratt":"","ingredienser":[],"kommentar":"Ingen mat hittades i bilden."}`;
+
+let AIDRAFT = null, AIABORT = null;
+ACT.photoMeal = () => { ACT.newMeal(); ACT.aiPhoto(); };
+ACT.aiPhoto = () => {
+  const c = aiCfg();
+  if (!c.key) {
+    openSheet(`${sheetHead('Fota måltid')}<div class="sbody"><p>För att analysera foton behöver appen en API-nyckel till Claude. Den sparas bara på den här enheten.</p>
+      <button class="btn pri block" data-a="setAi">Lägg in API-nyckel</button></div>`, { onClose: () => setTimeout(openMealEditor, 0) });
+    return;
+  }
+  if (aiUsage().n >= c.max) { toast(`Månadsgränsen på ${c.max} analyser är nådd – ändra under Inställningar → AI-fotoanalys`, 4500); return; }
+  let inp = $('#aiFile');
+  if (!inp) { inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'image/*'; inp.id = 'aiFile'; inp.className = 'hidden'; document.body.appendChild(inp); }
+  inp.value = '';
+  inp.onchange = () => { const f = inp.files[0]; if (f) aiStart(f); };
+  inp.click();
+};
+async function shrinkImage(file, max = 1280) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error('Kunde inte läsa bilden')); i.src = url; });
+    const k = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+    const cv = document.createElement('canvas'); cv.width = Math.round(img.naturalWidth * k); cv.height = Math.round(img.naturalHeight * k);
+    cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+    return cv.toDataURL('image/jpeg', 0.82);
+  } finally { URL.revokeObjectURL(url); }
+}
+async function aiStart(file) {
+  const mealBackup = MEAL;
+  openSheet(`${sheetHead('Analyserar bilden …')}<div class="sbody"><div id="aiPrev" style="margin-bottom:10px"></div>
+    <label class="f">Kommentar till analysen (valfritt)</label><input type="text" id="aiNote" placeholder="t.ex. laxen ca 150 g, stekt i smör">
+    <div class="btns" style="margin-top:10px"><button class="btn pri" data-a="aiRun">Analysera</button></div>
+    <div id="aiStatus" class="note"></div></div>`, { id: 'ai', onClose: () => { if (AIABORT) AIABORT.abort(); MEAL = mealBackup; setTimeout(openMealEditor, 0); } });
+  try {
+    const dataUrl = await shrinkImage(file);
+    AIDRAFT = { img: dataUrl, ratt: '', kommentar: '', rows: [] };
+    $('#aiPrev').innerHTML = `<img src="${dataUrl}" alt="Foto av måltiden" style="width:100%;max-height:260px;object-fit:cover;border-radius:12px">`;
+    $('#sheet .sh h2').textContent = 'Fota måltid';
+  } catch (e) { $('#aiStatus').textContent = e.message; }
+}
+ACT.aiRun = async () => {
+  if (!AIDRAFT?.img) return;
+  const c = aiCfg(), st = $('#aiStatus'), btn = $('[data-a="aiRun"]');
+  btn.disabled = true; btn.textContent = 'Analyserar …'; st.textContent = 'Skickar bilden till Claude. Det tar oftast 5–20 sekunder.';
+  AIABORT = new AbortController();
+  try {
+    const note = $('#aiNote').value.trim();
+    const excl = S.uteslut.filter(x => x.aktiv).map(x => x.namn).join(', ');
+    const r = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST', signal: AIABORT.signal,
+      headers: { 'x-api-key': c.key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json', 'anthropic-dangerous-direct-browser-access': 'true' },
+      body: JSON.stringify({ model: c.model, max_tokens: 1500, system: AI_SYSTEM, messages: [{ role: 'user', content: [
+        { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: AIDRAFT.img.split(',')[1] } },
+        { type: 'text', text: `Analysera måltiden.${note ? ' Användarens kommentar: ' + note : ''}${excl ? ' (Användaren äter inte: ' + excl + ' – nämn i kommentaren om något sådant syns.)' : ''}` }] }] })
+    });
+    const u = aiUsage(); u.n++; await saveLocal();
+    if (!r.ok) throw await aiError(r);
+    const j = await r.json();
+    const text = (j.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
+    const parsed = JSON.parse(text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1));
+    AIDRAFT.ratt = parsed.ratt || ''; AIDRAFT.kommentar = parsed.kommentar || '';
+    AIDRAFT.rows = (parsed.ingredienser || []).map(x => {
+      const m = aiMatch(x); const ex = m && exclInfo(m.id)?.hide.length; return { namn: x.namn, sok: x.sok || x.namn, gram: Math.round(+x.gram || 0), sak: x.sakerhet || '', fid: m ? m.id : null, inc: !!m && !ex && (x.sakerhet !== 'låg' || +x.gram <= 30) };
+    });
+    renderAiReview();
+  } catch (e) {
+    if (e.name === 'AbortError') return;
+    st.innerHTML = `<span style="color:var(--bad)">${esc(e instanceof SyntaxError ? 'Svaret gick inte att tolka. Försök igen.' : e.message)}</span>`;
+    btn.disabled = false; btn.textContent = 'Försök igen';
+  } finally { AIABORT = null; }
+};
+async function aiError(r) {
+  let msg = ''; try { msg = (await r.json()).error?.message || ''; } catch { }
+  if (/CORS/i.test(msg)) return new Error('Organisationen tillåter inte anrop direkt från webbläsaren. Kontrollera inställningarna i Anthropics konsol.');
+  const m = { 400: 'Anropet nekades (400).', 401: 'API-nyckeln är ogiltig. Kontrollera den under Inställningar → AI-fotoanalys.', 402: 'Kontot saknar kredit. Fyll på i Anthropics konsol.', 403: 'Nyckeln saknar behörighet.', 404: 'Modellen hittades inte – välj en annan modell under Inställningar.', 413: 'Bilden är för stor.', 429: 'För många anrop just nu – vänta en stund.', 529: 'Tjänsten är överbelastad – försök igen om en stund.' }[r.status] || `Fel ${r.status}.`;
+  return new Error(m + (msg && r.status !== 401 ? ` (${msg})` : ''));
+}
+function aiMatch(x) {
+  const tries = [x.sok, x.namn, (x.sok || '').split(' ')[0]].filter(Boolean);
+  for (const q of tries) { const r = searchFoods(q, true); if (r.length) return r[0]; }
+  return null;
+}
+function renderAiReview() {
+  const rows = AIDRAFT.rows;
+  const tot = zeroNut(); rows.filter(r => r.inc && r.fid != null).forEach(r => { const f = getFood(r.fid); if (f) addNut(tot, rowNut({ n: f.n, g: r.gram })); });
+  $('#sheet .sbody').innerHTML = `<img src="${AIDRAFT.img}" alt="" style="width:100%;max-height:180px;object-fit:cover;border-radius:12px">
+    ${AIDRAFT.ratt ? `<h2 style="margin:10px 0 2px">${esc(AIDRAFT.ratt)}</h2>` : ''}${AIDRAFT.kommentar ? `<div class="small muted">${esc(AIDRAFT.kommentar)}</div>` : ''}
+    <div class="banner info" style="margin-top:10px">Vikterna är AI-uppskattningar och kan avvika mycket. Justera innan du lägger till.</div>
+    ${rows.length ? `<div class="list">${rows.map((r, i) => { const f = r.fid != null ? getFood(r.fid) : null; const x = f ? exclInfo(f.id) : null; return `<div class="food" style="cursor:default;flex-wrap:wrap;align-items:flex-start">
+      <input type="checkbox" ${r.inc ? 'checked' : ''} data-c="aiInc" data-ix="${i}" style="width:22px;height:22px;margin-top:2px" aria-label="Ta med">
+      <div class="grow"><div class="n">${esc(r.namn)} ${r.sak ? `<span class="chip ${r.sak === 'hög' ? 'ok' : r.sak === 'låg' ? 'warn' : 'out'}">${esc(r.sak)}</span>` : ''}</div>
+        <div class="m">${f ? '→ ' + esc(f.namn) : '<span style="color:var(--bad)">Ingen träff i databasen</span>'} ${x && x.hide.length ? `<span class="chip bad">${esc(x.hide.join(', '))}</span>` : ''}</div>
+        <details style="margin-top:4px"><summary class="xs" style="color:var(--acc);cursor:pointer">Byt livsmedel</summary>
+          <input type="search" value="${esc(r.sok)}" data-i="aiSearch" data-ix="${i}" style="margin-top:6px"><div id="aiRes${i}"></div></details></div>
+      <div class="qty"><input type="text" inputmode="decimal" value="${r.gram}" data-i="aiGram" data-ix="${i}" aria-label="Gram" onfocus="this.select()"><span class="small muted">g</span></div></div>`; }).join('')}</div>`
+      : '<div class="empty">Inga livsmedel hittades i bilden.</div>'}
+    <div class="card" id="aiTot"><div class="macros"><div><div class="v num">${f0(tot.kcal)}</div><div class="l">kcal</div></div><div><div class="v num">${f0(tot.prot)}</div><div class="l">protein</div></div><div><div class="v num">${f0(tot.kolh)}</div><div class="l">kolh</div></div><div><div class="v num">${f0(tot.fett)}</div><div class="l">fett</div></div><div><div class="v num">${f1(tot.fiber)}</div><div class="l">fiber</div></div></div></div>
+    <div class="btns"><button class="btn" data-a="aiPhotoAgain">Ny bild</button><button class="btn pri" data-a="aiAccept">Lägg till markerade</button></div>
+    <div class="note">Analyser denna månad: ${aiUsage().n} av ${aiCfg().max}. Bilden sparas inte.</div>`;
+}
+ACT.aiInc = el => { AIDRAFT.rows[+el.dataset.ix].inc = el.checked; renderAiReview(); };
+ACT.aiGram = el => { const v = pnum(el.value); if (v != null) AIDRAFT.rows[+el.dataset.ix].gram = v; const tot = zeroNut(); AIDRAFT.rows.filter(r => r.inc && r.fid != null).forEach(r => { const f = getFood(r.fid); if (f) addNut(tot, rowNut({ n: f.n, g: r.gram })); }); const vs = $$('#aiTot .v'); [tot.kcal, tot.prot, tot.kolh, tot.fett].forEach((v, i) => vs[i].textContent = f0(v)); vs[4].textContent = f1(tot.fiber); };
+ACT.aiSearch = el => {
+  const i = +el.dataset.ix; clearTimeout(ACT._ais); ACT._ais = setTimeout(() => {
+    const res = searchFoods(el.value, true).slice(0, 8);
+    $('#aiRes' + i).innerHTML = res.map(f => `<button class="li" style="padding:8px 4px" data-a="aiPick" data-ix="${i}" data-fid="${f.id}"><div class="t small">${esc(f.namn)}${exclInfo(f.id)?.hide.length ? ' <span class="chip bad">utesluten</span>' : ''}</div></button>`).join('') || '<div class="note">Inga träffar</div>';
+  }, 150);
+};
+ACT.aiPick = el => { const r = AIDRAFT.rows[+el.dataset.ix]; r.fid = isNaN(el.dataset.fid) ? el.dataset.fid : +el.dataset.fid; r.inc = true; renderAiReview(); };
+ACT.aiPhotoAgain = () => { closeSheet(); setTimeout(() => toast('Tryck på Fota måltid igen'), 50); };
+ACT.aiAccept = () => {
+  const add = AIDRAFT.rows.filter(r => r.inc && r.fid != null && r.gram > 0);
+  if (!add.length) { toast('Markera minst ett livsmedel'); return; }
+  const target = $('#sheet')._onClose; $('#sheet')._onClose = null;
+  closeSheet();
+  if (target) target(); // återställ MEAL och öppna editorn
+  setTimeout(() => {
+    add.forEach(r => { const s = snapRow(r.fid, r.gram); if (s) MEAL.rader.push(s); });
+    if (!MEAL.namn && AIDRAFT.ratt) MEAL.namn = AIDRAFT.ratt;
+    $('#mealRows').innerHTML = mealRowsHtml(); refreshMealParts(); toast(`${add.length} livsmedel tillagda från fotot`);
+  }, 30);
+};
+
+/* ---------- inställningar för AI ---------- */
+ACT.setAi = () => {
+  const c = aiCfg(), known = AI_MODELS.some(m => m[0] === c.model);
+  openSheet(`${sheetHead('AI-fotoanalys')}<div class="sbody">
+    <p class="small muted">Fota en måltid så föreslår Claude ingredienser och vikter, som matchas mot Livsmedelsverkets databas. Du granskar alltid förslaget innan något sparas. Bilden skickas till Anthropic för analys och sparas inte i appen.</p>
+    <details class="card"><summary>Så skaffar du en API-nyckel</summary><ol class="small" style="padding-left:18px;margin:8px 0 0">
+      <li>Gå till Anthropics utvecklarkonsol, <b>platform.claude.com</b>, och skapa ett konto. API:et faktureras separat från ett Claude-abonnemang.</li>
+      <li>Lägg in betalkort och köp en liten kredit, t.ex. 5 USD.</li>
+      <li>Sätt en <b>månadsgräns för kostnad</b> under Limits/Billing, så kan det aldrig bli dyrt.</li>
+      <li>Gå till <b>API keys → Create key</b>, döp den till "ShapeApp" och kopiera nyckeln (börjar med <code>sk-ant-</code>).</li>
+      <li>Klistra in den nedan och tryck Spara och testa.</li></ol></details>
+    <label class="f">API-nyckel</label><input type="password" id="aiK" value="${esc(c.key)}" autocomplete="off" placeholder="sk-ant-…">
+    <label class="f">Modell</label><select id="aiM">${AI_MODELS.map(([k, l]) => `<option value="${k}" ${k === c.model ? 'selected' : ''}>${l}</option>`).join('')}<option value="_egen" ${!known ? 'selected' : ''}>Annan modell …</option></select>
+    <input type="text" id="aiMC" value="${known ? '' : esc(c.model)}" placeholder="modellnamn, t.ex. claude-sonnet-5-5" style="margin-top:6px" autocapitalize="off" autocorrect="off">
+    <label class="f">Max antal analyser per månad</label><input type="number" inputmode="numeric" id="aiX" value="${c.max}">
+    <div class="note">Använt denna månad: ${aiUsage().n}. Spärren skyddar mot oavsiktliga anrop – sätt även en kostnadsgräns i konsolen.</div>
+    <div class="note">Nyckeln sparas bara på den här enheten och följer aldrig med i export, backup eller GitHub. Den som har tillgång till din upplåsta telefon kan i princip läsa den.</div>
+    <div id="aiTest" class="note"></div></div>
+    <div class="sf"><div class="btns">${c.key ? '<button class="btn danger" data-a="aiRemove">Ta bort nyckel</button>' : ''}<button class="btn pri" data-a="aiSave">Spara och testa</button></div></div>`, { id: 'aiset', onClose: backToSettings });
+};
+ACT.aiSave = async () => {
+  const c = aiCfg(); c.key = $('#aiK').value.replace(/\s+/g, ''); const m = $('#aiM').value;
+  c.model = m === '_egen' ? ($('#aiMC').value.trim() || 'claude-sonnet-5-5') : m;
+  c.max = Math.max(1, parseInt($('#aiX').value) || 60); await saveLocal();
+  if (!c.key) { toast('Ange en nyckel'); return; }
+  const t = $('#aiTest'); t.textContent = 'Testar nyckeln …';
+  try {
+    const r = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'x-api-key': c.key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json', 'anthropic-dangerous-direct-browser-access': 'true' }, body: JSON.stringify({ model: c.model, max_tokens: 5, messages: [{ role: 'user', content: 'Svara OK' }] }) });
+    if (!r.ok) throw await aiError(r);
+    t.innerHTML = '<span style="color:var(--ok)">✓ Nyckeln fungerar.</span>'; toast('AI-fotoanalys klar att använda');
+  } catch (e) { t.innerHTML = `<span style="color:var(--bad)">${esc(e.message)}</span>`; }
+};
+ACT.aiRemove = () => confirmBox('Ta bort API-nyckeln från den här enheten?', 'Ta bort', async () => { aiCfg().key = ''; await saveLocal(); toast('Nyckeln borttagen'); });
+
 /* ---------- INSTÄLLNINGAR ---------- */
 ACT.openSettings = () => {
   const s = LOCAL.sync || {};
@@ -1343,6 +1514,7 @@ ACT.openSettings = () => {
       <button class="li" data-a="openExcl"><div class="t"><div>Livsmedel jag inte äter</div><div class="small muted">${S.uteslut.filter(c => c.aktiv).length} aktiva kategorier</div></div></button>
       <button class="li" data-a="manageOvn"><div class="t"><div>Övningsbibliotek</div></div></button>
       <button class="li" data-a="manageMallarPass"><div class="t"><div>Passmallar</div></div></button>
+      <button class="li" data-a="setAi"><div class="t"><div>AI-fotoanalys</div><div class="small muted">${LOCAL.ai?.key ? 'Aktiv · ' + esc(LOCAL.ai.model) : 'Ingen API-nyckel ännu'}</div></div>${LOCAL.ai?.key ? '<span class="chip ok">På</span>' : ''}</button>
       <button class="li" data-a="setPamin"><div class="t"><div>Påminnelser</div><div class="small muted">I appen och som kalenderhändelser</div></div></button>
     </div>
     <div class="sec">Data</div>
